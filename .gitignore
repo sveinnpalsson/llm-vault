@@ -1,0 +1,32 @@
+# Runtime state
+state/*.db
+state/*.db-*
+state/*.sqlite
+state/*.sqlite-*
+state/*.lock
+state/*.jsonl
+state/*.log
+
+# Logs
+logs/*.log
+
+# Python env/cache
+.venv*/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Temp artifacts
+tmp/
+tmp-*/
+*.tmp
+*.bak
+
+# Local fixture corpora
+test_docs_photos/
+
+# Local operator config
+vault-ops.toml
+.vault-ops.toml

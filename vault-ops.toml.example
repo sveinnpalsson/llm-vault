@@ -1,0 +1,51 @@
+[paths]
+registry_db = "state/vault_registry.db"
+vectors_db = "state/vault_vectors.db"
+docs_roots = []
+photos_roots = []
+
+[summary]
+base_url = "http://127.0.0.1:8080/v1"
+model = "qwen3-14b"
+# api_key = "local"
+# timeout = 90
+
+[embedding]
+base_url = "http://127.0.0.1:8080/v1"
+model = "Qwen3-Embedding-8B"
+# api_key = "local"
+# timeout = 60
+
+[redaction]
+base_url = "http://127.0.0.1:8080/v1"
+model = "qwen3-14b"
+# api_key = "local"
+# timeout = 45
+
+[photo_analysis]
+# Optional companion service. Set this to your local analyzer endpoint when enabled.
+# url = "http://127.0.0.1:<photo-analyzer-port>/analyze"
+# timeout = 45
+# force = false
+
+[pdf]
+# Optional companion service. Set this to your local PDF parser when enabled.
+# parse_url = "http://127.0.0.1:<pdf-parser-port>/v1/pdf/parse"
+# timeout = 600
+# profile = "auto"
+# disable_service = false
+
+[mail_bridge]
+enabled = false
+db_path = ""
+password_env = "INBOX_VAULT_DB_PASSWORD"
+include_accounts = []
+import_summary = true
+max_body_chunks = 12
+
+[search]
+top_k = 5
+search_level = "auto"
+
+[runtime]
+# max_seconds = 600
