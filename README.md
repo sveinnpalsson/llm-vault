@@ -5,7 +5,7 @@ Privacy-first local vault for personal documents, photos, and email.
 `llm-vault` indexes local files into encrypted SQLite databases, builds a local vector index, and exposes a single operator CLI: `vault-ops`. `llm-vault` relies on your local compute stack to build data understanding: document summaries, photo captioning, face recognition, text recognition, and most importantly private information redaction. The vector index allows your agents to search all your documents easily and the redaction engine removes sensitive data from the results. 
 
 **Developer note**
->I developed this project to build on top the idea I had for my [inbox-vault]>(https://github.com/sveinnpalsson/inbox-vault) project, expanding the idea to documents, photos, and then bridging the inbox-vault in this project so the llm-vault has access to mail through inbox-vault. I'm working on integrating inbox-vault into this project now but until then llm-vault needs inbox-vault for mail to work.
+>I developed this project to build on top the idea I had for my [inbox-vault](https://github.com/sveinnpalsson/inbox-vault) project, expanding the idea to documents, photos, and then bridging the inbox-vault in this project so the llm-vault has access to mail through inbox-vault. I'm working on integrating inbox-vault into this project now but until then llm-vault needs inbox-vault for mail to work.
 
 >The project is currently positioned as a skill for agents, but to be true to the goal of correctly handling agent's permission it should be a plugin tool instead. I believe that is the best way to allow sandboxed agents to access redacted information.
 
