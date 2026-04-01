@@ -1,0 +1,5 @@
+{
+  "repoRoot": "/absolute/path/to/llm-vault",
+  "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
+  "timeoutSeconds": 120
+}

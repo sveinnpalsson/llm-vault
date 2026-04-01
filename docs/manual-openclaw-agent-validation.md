@@ -43,7 +43,7 @@ vault-ops update --max-seconds 300
 vault-ops search "tax receipt" --json
 ```
 
-7. Wire the repo-local OpenClaw plugin scaffold from `plugins/llm-vault-openclaw/` into your local OpenClaw plugin path. If your local setup cannot rely on the default repo wrapper path, configure the plugin with the checkout root and explicit `vault-agent` path:
+7. Wire the repo-local OpenClaw plugin scaffold from `plugins/llm-vault-openclaw/` into your local OpenClaw plugin path. Copy `plugins/llm-vault-openclaw/plugin-config.example.json` into your local plugin config first, then edit it. If your local setup cannot rely on the default repo wrapper path, configure the plugin with the checkout root and explicit `vault-agent` path:
 
 ```json
 {
@@ -53,15 +53,23 @@ vault-ops search "tax receipt" --json
 }
 ```
 
-8. Run agent-safe checks against the constrained wrapper:
+8. Confirm the plugin package layout stayed intact in the location OpenClaw will load:
+
+```bash
+ls plugins/llm-vault-openclaw
+```
+
+If you copied the plugin elsewhere, confirm that copied directory still contains `package.json`, `openclaw.plugin.json`, `index.js`, and your edited config.
+
+9. Run agent-safe checks against the constrained wrapper:
 
 ```bash
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-9. From OpenClaw, verify the plugin only exposes `/vault status` and redacted search commands.
-10. Record the exact commands used, whether the installed entry points resolved correctly, whether the plugin found the intended checkout, and any setup friction for follow-up work.
+10. From OpenClaw, verify the plugin only exposes `/vault status` and redacted search commands.
+11. Record the exact commands used, whether the installed entry points resolved correctly, whether the plugin found the intended checkout, and any setup friction for follow-up work.
 
 ## Notes
 

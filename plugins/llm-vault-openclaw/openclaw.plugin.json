@@ -9,7 +9,7 @@
       "repoRoot": {
         "type": "string",
         "minLength": 1,
-        "description": "Absolute path to the llm-vault checkout. Defaults to this plugin checkout root."
+        "description": "Path to the llm-vault checkout. Defaults to the repo root that contains this plugin; relative paths resolve from that default root."
       },
       "vaultAgentPath": {
         "type": "string",
