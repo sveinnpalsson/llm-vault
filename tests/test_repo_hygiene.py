@@ -9,6 +9,7 @@ TRACKED_RELEASE_PATHS = (
     "README.md",
     "TODO.md",
     "docs",
+    "plugins",
     "scripts",
     "skills",
     "tests",
