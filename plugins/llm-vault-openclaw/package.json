@@ -1,0 +1,11 @@
+{
+  "name": "llm-vault-openclaw",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

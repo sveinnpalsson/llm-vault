@@ -5,10 +5,10 @@
 1. Improve `.doc/.docx` extraction quality and add regression fixtures.
 2. Add richer OCR-noise synthetic fixtures for parser + retrieval evaluation.
 3. Expand query filters (for example per-root/source labels) if agent workloads require it.
-4. Make `llm-vault` installable as an OpenClaw plugin/tool instead of relying on repo-local wrappers and skill-style setup.
+4. Expand the new in-repo OpenClaw plugin scaffold into a standalone install path instead of relying on a repo-local plugin folder.
 5. Add a fresh-agent setup path that is documented end to end and validated from a clean OpenClaw agent install.
-6. Package installable CLI entry points for `vault-ops` and `vault-agent`, then keep repo-root wrappers as thin compatibility shims if needed.
-7. Add plugin/install smoke checks that prove a fresh agent can install, configure, and run redacted search without repo-specific knowledge.
+6. Keep the packaged `vault-ops` and `vault-agent` entry points compatible as the plugin path grows.
+7. Add plugin/install smoke checks that prove a fresh agent can install, configure, discover the plugin, and run redacted search without repo-specific knowledge.
 8. Add a redaction benchmark harness with a pinned evaluation slice, reproducible run command, and reportable metrics.
 
 ## Release operations

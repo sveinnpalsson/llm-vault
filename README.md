@@ -7,7 +7,7 @@ Privacy-first local vault for personal documents, photos, and email.
 **Developer note**
 >I developed this project to build on top the idea I had for my [inbox-vault](https://github.com/sveinnpalsson/inbox-vault) project, expanding the idea to documents, photos, and then bridging the inbox-vault in this project so the llm-vault has access to mail through inbox-vault. I'm working on integrating inbox-vault into this project now but until then llm-vault needs inbox-vault for mail to work.
 
->The project is currently positioned as a skill for agents, but to be true to the goal of correctly handling agent's permission it should be a plugin tool instead. I believe that is the best way to allow sandboxed agents to access redacted information.
+>The repo now includes an initial OpenClaw plugin scaffold around the safe `vault-agent` surface, but it is not yet the final standalone plugin/tool release. The long-term goal is still a polished OpenClaw plugin path that gives sandboxed agents redacted access without collapsing operator boundaries.
 
 >This project was developed by me, heavily depending on openai/gpt-5.4 for coding and writing most of the documentation you will find in this repo. I used [openclaw](https://github.com/openclaw/openclaw) coding-agent connected to OpenAI codex + gpt-5.4. 
 
@@ -29,7 +29,7 @@ vault-ops status
 
 `pip install -e .` now exposes installable `vault-ops` and `vault-agent` commands from the checkout. The repo-root `./vault-ops` and `./vault-agent` wrappers remain thin compatibility shims for people who still run directly from the repo root.
 
-Current scope: this is the first real install foundation for `llm-vault`, not the final standalone OpenClaw plugin artifact. Fresh-agent validation is still a manual operator-run path and is documented separately in [Manual OpenClaw Agent Validation](docs/manual-openclaw-agent-validation.md).
+Current scope: `llm-vault` now has packaged `vault-ops` / `vault-agent` entry points and an in-repo OpenClaw plugin scaffold under [plugins/llm-vault-openclaw](plugins/llm-vault-openclaw). This is still not the final standalone OpenClaw plugin artifact. Fresh-agent validation is still a manual operator-run path and is documented separately in [Manual OpenClaw Agent Validation](docs/manual-openclaw-agent-validation.md).
 
 ## Config
 
@@ -121,6 +121,8 @@ For constrained read-only agent access, use `vault-agent` instead of raw `vault-
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
+
+The first OpenClaw plugin scaffold now wraps this exact safe surface. See [OpenClaw Plugin Scaffold](docs/openclaw-plugin.md).
 
 ## Encryption And Privacy
 
