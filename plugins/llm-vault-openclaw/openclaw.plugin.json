@@ -5,6 +5,24 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "repoRoot": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Absolute path to the llm-vault checkout. Defaults to this plugin checkout root."
+      },
+      "vaultAgentPath": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Path to vault-agent. Relative paths resolve from repoRoot and default to ./vault-agent."
+      },
+      "timeoutSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300,
+        "default": 120,
+        "description": "Timeout passed to vault-agent and enforced by the plugin wrapper."
+      }
+    }
   }
 }

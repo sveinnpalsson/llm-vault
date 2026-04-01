@@ -122,7 +122,7 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-The first OpenClaw plugin scaffold now wraps this exact safe surface. See [OpenClaw Plugin Scaffold](docs/openclaw-plugin.md).
+The first OpenClaw plugin scaffold now wraps this exact safe surface. It stays agent-safe by exposing only `/vault status` and redacted search filters that forward to `vault-agent`; `vault-ops` update/repair/full-clearance workflows remain operator-only. The repo-local scaffold now also has a small plugin config contract for `repoRoot`, `vaultAgentPath`, and `timeoutSeconds`. See [OpenClaw Plugin Scaffold](docs/openclaw-plugin.md).
 
 ## Encryption And Privacy
 
