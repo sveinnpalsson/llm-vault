@@ -13,6 +13,11 @@ const SOURCE_CHOICES = new Set(["all", "docs", "photos", "mail"]);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const DEFAULT_VAULT_AGENT_PATH = "./vault-agent";
+const PLUGIN_ID = "llm-vault";
+const PLUGIN_NAME = "llm-vault";
+const PLUGIN_DESCRIPTION = "Safe llm-vault OpenClaw plugin scaffold backed by vault-agent.";
+const COMMAND_NAME = "vault";
+const COMMAND_DESCRIPTION = "Run safe llm-vault status and redacted search commands.";
 const PLUGIN_CONFIG_KEYS = new Set(["repoRoot", "vaultAgentPath", "timeoutSeconds"]);
 const SAFE_SURFACE = Object.freeze([
   {
@@ -34,6 +39,30 @@ const SAFE_BOUNDARY_LINES = Object.freeze([
   "This plugin only exposes the agent-safe vault-agent surface.",
   "Raw vault-ops update/repair/full-clearance workflows remain operator-only.",
 ]);
+const CONFIG_SCHEMA = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    repoRoot: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Path to the llm-vault checkout. Defaults to the repo root that contains this plugin; relative paths resolve from that default root.",
+    },
+    vaultAgentPath: {
+      type: "string",
+      minLength: 1,
+      description: "Path to vault-agent. Relative paths resolve from repoRoot and default to ./vault-agent.",
+    },
+    timeoutSeconds: {
+      type: "integer",
+      minimum: 1,
+      maximum: MAX_TIMEOUT_SECONDS,
+      default: DEFAULT_TIMEOUT_SECONDS,
+      description: "Timeout passed to vault-agent and enforced by the plugin wrapper.",
+    },
+  },
+});
 
 function usage() {
   return [
@@ -301,36 +330,14 @@ async function handleVaultCommand(rawArgs, rawConfig) {
 }
 
 const plugin = {
-  id: "llm-vault",
-  name: "llm-vault",
-  description: "Safe llm-vault OpenClaw plugin scaffold backed by vault-agent.",
-  configSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      repoRoot: {
-        type: "string",
-        minLength: 1,
-        description: "Absolute path to the llm-vault checkout. Defaults to this plugin checkout root.",
-      },
-      vaultAgentPath: {
-        type: "string",
-        minLength: 1,
-        description: "Path to vault-agent. Relative paths resolve from repoRoot and default to ./vault-agent.",
-      },
-      timeoutSeconds: {
-        type: "integer",
-        minimum: 1,
-        maximum: MAX_TIMEOUT_SECONDS,
-        default: DEFAULT_TIMEOUT_SECONDS,
-        description: "Timeout passed to vault-agent and enforced by the plugin wrapper.",
-      },
-    },
-  },
+  id: PLUGIN_ID,
+  name: PLUGIN_NAME,
+  description: PLUGIN_DESCRIPTION,
+  configSchema: CONFIG_SCHEMA,
   register(api) {
     api.registerCommand({
-      name: "vault",
-      description: "Run safe llm-vault status and redacted search commands.",
+      name: COMMAND_NAME,
+      description: COMMAND_DESCRIPTION,
       acceptsArgs: true,
       handler: async (ctx) => {
         try {
@@ -344,5 +351,20 @@ const plugin = {
   },
 };
 
-export { buildVaultAgentInvocation, handleVaultCommand, parseSearchArgs, resolvePluginConfig, tokenizeArgs, usage };
+export {
+  COMMAND_DESCRIPTION,
+  COMMAND_NAME,
+  CONFIG_SCHEMA,
+  PLUGIN_DESCRIPTION,
+  PLUGIN_ID,
+  PLUGIN_NAME,
+  SAFE_BOUNDARY_LINES,
+  SAFE_SURFACE,
+  buildVaultAgentInvocation,
+  handleVaultCommand,
+  parseSearchArgs,
+  resolvePluginConfig,
+  tokenizeArgs,
+  usage,
+};
 export default plugin;

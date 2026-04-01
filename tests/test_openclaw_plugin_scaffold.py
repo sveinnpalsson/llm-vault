@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "llm-vault-openclaw"
 PLUGIN_INDEX = str((PLUGIN_DIR / "index.js").resolve().as_posix())
+PLUGIN_README = PLUGIN_DIR / "README.md"
+PLUGIN_CONFIG_EXAMPLE = PLUGIN_DIR / "plugin-config.example.json"
 
 
 def _run_node_json(snippet: str) -> dict[str, object] | list[object]:
@@ -39,7 +41,7 @@ def test_openclaw_plugin_manifest_declares_llm_vault_plugin() -> None:
                 "repoRoot": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Absolute path to the llm-vault checkout. Defaults to this plugin checkout root.",
+                    "description": "Path to the llm-vault checkout. Defaults to the repo root that contains this plugin; relative paths resolve from that default root.",
                 },
                 "vaultAgentPath": {
                     "type": "string",
@@ -61,7 +63,21 @@ def test_openclaw_plugin_manifest_declares_llm_vault_plugin() -> None:
 def test_openclaw_plugin_package_points_at_extension_module() -> None:
     payload = json.loads((PLUGIN_DIR / "package.json").read_text(encoding="utf-8"))
     assert payload["name"] == "llm-vault-openclaw"
+    assert payload["private"] is True
     assert payload["type"] == "module"
+    assert payload["main"] == "./index.js"
+    assert payload["exports"] == {
+        ".": "./index.js",
+        "./openclaw.plugin.json": "./openclaw.plugin.json",
+        "./plugin-config.example.json": "./plugin-config.example.json",
+    }
+    assert payload["files"] == [
+        "README.md",
+        "index.js",
+        "openclaw.plugin.json",
+        "package.json",
+        "plugin-config.example.json",
+    ]
     assert payload["openclaw"]["extensions"] == ["./index.js"]
 
 
@@ -74,12 +90,31 @@ def test_openclaw_plugin_docs_are_honest_about_scope() -> None:
     assert "vaultAgentPath" in content
     assert "manual" in content.lower()
     assert "Svenni" in content
+    assert "plugin-config.example.json" in content
+    assert "copy that directory" in content
+    assert "loader reads `package.json`" in content
+
+
+def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enablement() -> None:
+    readme = PLUGIN_README.read_text(encoding="utf-8")
+    example = json.loads(PLUGIN_CONFIG_EXAMPLE.read_text(encoding="utf-8"))
+
+    assert "repo-local OpenClaw plugin package" in readme
+    assert "plugin-config.example.json" in readme
+    assert "vault-agent" in readme
+    assert "operator-only" in readme
+    assert "manual" in readme.lower()
+    assert example == {
+        "repoRoot": "/absolute/path/to/llm-vault",
+        "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
+        "timeoutSeconds": 120,
+    }
 
 
 def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
     content = (PLUGIN_DIR / "index.js").read_text(encoding="utf-8")
     assert "SAFE_SURFACE" in content
-    assert 'name: "vault"' in content
+    assert 'const COMMAND_NAME = "vault"' in content
     assert 'runVaultAgent(["status"], rawConfig)' in content
     assert 'args.push("search-redacted"' in content
     assert "resolvePluginConfig" in content
@@ -124,6 +159,29 @@ console.log(JSON.stringify({{
             "hasHandler": True,
         }
     ]
+
+
+def test_openclaw_plugin_manifest_matches_exported_config_schema() -> None:
+    payload = _run_node_json(
+        f"""
+import plugin, {{ CONFIG_SCHEMA, PLUGIN_ID, PLUGIN_NAME }} from {json.dumps(PLUGIN_INDEX)};
+console.log(JSON.stringify({{
+  id: plugin.id,
+  name: plugin.name,
+  pluginConfigSchema: plugin.configSchema,
+  exportedConfigSchema: CONFIG_SCHEMA,
+  exportedId: PLUGIN_ID,
+  exportedName: PLUGIN_NAME,
+}}));
+"""
+    )
+    if not payload:
+        return
+
+    manifest = json.loads((PLUGIN_DIR / "openclaw.plugin.json").read_text(encoding="utf-8"))
+    assert payload["id"] == manifest["id"] == payload["exportedId"]
+    assert payload["name"] == manifest["name"] == payload["exportedName"]
+    assert payload["pluginConfigSchema"] == manifest["configSchema"] == payload["exportedConfigSchema"]
 
 
 def test_openclaw_plugin_config_defaults_and_overrides_are_stable(tmp_path: Path) -> None:

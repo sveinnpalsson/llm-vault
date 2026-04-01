@@ -2,7 +2,28 @@
   "name": "llm-vault-openclaw",
   "private": true,
   "version": "0.0.1",
+  "description": "Repo-local OpenClaw plugin scaffold for safe llm-vault status and redacted search access.",
   "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./openclaw.plugin.json": "./openclaw.plugin.json",
+    "./plugin-config.example.json": "./plugin-config.example.json"
+  },
+  "files": [
+    "README.md",
+    "index.js",
+    "openclaw.plugin.json",
+    "package.json",
+    "plugin-config.example.json"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "llm-vault",
+    "vault-agent",
+    "redacted-search"
+  ],
   "openclaw": {
     "extensions": [
       "./index.js"
