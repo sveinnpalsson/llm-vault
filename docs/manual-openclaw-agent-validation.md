@@ -43,16 +43,28 @@ vault-ops update --max-seconds 300
 vault-ops search "tax receipt" --json
 ```
 
-7. Run agent-safe checks against the constrained wrapper:
+7. Wire the repo-local OpenClaw plugin scaffold from `plugins/llm-vault-openclaw/` into your local OpenClaw plugin path. If your local setup cannot rely on the default repo wrapper path, configure the plugin with the checkout root and explicit `vault-agent` path:
+
+```json
+{
+  "repoRoot": "/absolute/path/to/llm-vault",
+  "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
+  "timeoutSeconds": 120
+}
+```
+
+8. Run agent-safe checks against the constrained wrapper:
 
 ```bash
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-8. Record the exact commands used, whether the installed entry points resolved correctly, and any setup friction for follow-up work.
+9. From OpenClaw, verify the plugin only exposes `/vault status` and redacted search commands.
+10. Record the exact commands used, whether the installed entry points resolved correctly, whether the plugin found the intended checkout, and any setup friction for follow-up work.
 
 ## Notes
 
 - Use the installed `vault-ops` and `vault-agent` commands for this check, not the repo-root `./vault-ops` or `./vault-agent` compatibility shims.
+- The plugin scaffold remains agent-safe only. Do not use it to exercise operator-only `vault-ops` workflows.
 - This checklist is a preparation path for Svenni's final fresh-agent validation. Passing it locally does not mean release validation is complete.
