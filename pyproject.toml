@@ -15,6 +15,26 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
+[project.scripts]
+vault-ops = "vault_ops_cli:main"
+vault-agent = "vault_agent_cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = [
+  "inspect_random_rows",
+  "vault_agent_cli",
+  "vault_db",
+  "vault_db_crypto",
+  "vault_db_summary",
+  "vault_ops_cli",
+  "vault_redaction",
+  "vault_registry_sync",
+  "vault_service_defaults",
+  "vault_sources",
+  "vault_vector_index",
+]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]

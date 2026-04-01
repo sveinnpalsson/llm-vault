@@ -5,6 +5,7 @@
 
 - Python 3.11
 - `pip install -e .[dev]`
+- installed `vault-ops` and `vault-agent` entry points from that editable checkout
 - SQLCipher-compatible runtime support
 - `LLM_VAULT_DB_PASSWORD` exported before running `vault-ops`
 - at least one local docs or photos root
@@ -12,7 +13,7 @@
 Recommended:
 
 - `pdftotext` for native-text PDFs
-- a repo-local `vault-ops.toml`
+- a local `vault-ops.toml` in the working directory where you run `vault-ops`
 
 ## Config shape
 
@@ -78,15 +79,15 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 After wiring the stack:
 
 ```bash
-./vault-ops status --json
-./vault-ops update --max-seconds 300
-./vault-ops repair --max-seconds 300
-./vault-ops search "tax receipt" --json
+vault-ops status --json
+vault-ops update --max-seconds 300
+vault-ops repair --max-seconds 300
+vault-ops search "tax receipt" --json
 ```
 
 If the mail bridge is enabled:
 
 ```bash
-./vault-ops update --source mail
-./vault-ops search "budget approval" --source mail --json
+vault-ops update --source mail
+vault-ops search "budget approval" --source mail --json
 ```
