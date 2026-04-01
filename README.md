@@ -24,8 +24,12 @@ python -m pip install --upgrade pip
 python -m pip install -e .[dev]
 export LLM_VAULT_DB_PASSWORD='choose-a-strong-passphrase'
 cp vault-ops.toml.example vault-ops.toml
-./vault-ops status
+vault-ops status
 ```
+
+`pip install -e .` now exposes installable `vault-ops` and `vault-agent` commands from the checkout. The repo-root `./vault-ops` and `./vault-agent` wrappers remain thin compatibility shims for people who still run directly from the repo root.
+
+Current scope: this is the first real install foundation for `llm-vault`, not the final standalone OpenClaw plugin artifact. Fresh-agent validation is still a manual operator-run path and is documented separately in [Manual OpenClaw Agent Validation](docs/manual-openclaw-agent-validation.md).
 
 ## Config
 
@@ -54,24 +58,24 @@ See [Infrastructure Stack](docs/infrastructure-stack.md) for the supported confi
 ## Core Commands
 
 ```bash
-./vault-ops status
-./vault-ops update
-./vault-ops repair
-./vault-ops search "tax receipt"
-./vault-ops upgrade --index-level redacted
+vault-ops status
+vault-ops update
+vault-ops repair
+vault-ops search "tax receipt"
+vault-ops upgrade --index-level redacted
 ```
 
 Useful variants:
 
 ```bash
-./vault-ops update --source docs
-./vault-ops update --source photos
-./vault-ops update --source mail
-./vault-ops repair --reprocess-missing-summaries 200
-./vault-ops repair --reprocess-missing-photo-analysis 100
-./vault-ops search "passport" --source docs --json
-./vault-ops search "beach trip" --source photos --taxonomy personal
-./vault-ops search "budget approval" --source mail --json
+vault-ops update --source docs
+vault-ops update --source photos
+vault-ops update --source mail
+vault-ops repair --reprocess-missing-summaries 200
+vault-ops repair --reprocess-missing-photo-analysis 100
+vault-ops search "passport" --source docs --json
+vault-ops search "beach trip" --source photos --taxonomy personal
+vault-ops search "budget approval" --source mail --json
 ```
 
 Defaults:
@@ -105,8 +109,8 @@ Typical flow:
 inbox-vault update
 
 # in llm-vault
-./vault-ops update --source mail
-./vault-ops search "budget approval" --source mail
+vault-ops update --source mail
+vault-ops search "budget approval" --source mail
 ```
 
 ## Agent Wrapper
@@ -114,8 +118,8 @@ inbox-vault update
 For constrained read-only agent access, use `vault-agent` instead of raw `vault-ops`:
 
 ```bash
-./vault-agent status
-./vault-agent search-redacted "tax receipt" --source docs --top-k 3
+vault-agent status
+vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
 ## Encryption And Privacy
@@ -127,7 +131,7 @@ For constrained read-only agent access, use `vault-agent` instead of raw `vault-
 To migrate older plaintext DBs:
 
 ```bash
-./vault-ops migrate-encryption
+vault-ops migrate-encryption
 ```
 
 ## Unified Skill
@@ -142,3 +146,5 @@ pytest -q
 ```
 
 Optional bounded live smoke tests remain opt-in through `LLM_VAULT_RUN_LIVE_SMOKE=1`.
+
+For install-surface coverage specifically, `tests/test_packaging_install.py` verifies the declared console entry points and smoke-tests `pip install -e . --no-deps --no-build-isolation` in a temporary virtualenv.
