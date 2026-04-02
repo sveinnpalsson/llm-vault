@@ -225,7 +225,7 @@ From OpenClaw, confirm:
 - `llm_vault_status` is available to the agent
 - `llm_vault_search` is available to the agent
 
-The runtime may attach wrapper/context objects such as `meta`, `wizard`, or similar envelopes around invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and still resolves only the documented llm-vault config values.
+The runtime may attach wrapper/context objects such as `meta`, `wizard`, `apiKey`, or similar envelopes around invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and still resolves only the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
 
 ## Honest Status
 

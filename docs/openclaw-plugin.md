@@ -118,9 +118,9 @@ The inner config payload is:
 
 ## Runtime Compatibility
 
-Real OpenClaw runtime contexts may attach wrapper/context objects such as `meta`, `wizard`, or similar envelopes around command/tool invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and only consumes the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
+Real OpenClaw runtime contexts may attach wrapper/context objects such as `meta`, `wizard`, `apiKey`, or similar envelopes around command/tool invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and only consumes the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
 
-That compatibility does not widen the backend boundary: unsupported llm-vault config keys still fail closed, and wrapper metadata is never forwarded to `vault-agent`.
+That compatibility does not widen the backend boundary: unsupported keys still fail closed inside the llm-vault config payload that actually defines `repoRoot`, `vaultAgentPath`, or `timeoutSeconds`, and wrapper metadata is never forwarded to `vault-agent`.
 
 ## Agent Allowlist
 

@@ -355,7 +355,10 @@ function hasPluginConfigKeys(value) {
   return isPlainObject(value) && Object.keys(value).some((key) => PLUGIN_CONFIG_KEYS.has(key));
 }
 
-function extractPluginConfigValues(rawConfig, insideConfigWrapper = false, isRoot = true) {
+function extractPluginConfigValues(
+  rawConfig,
+  { isRoot = true, insideConfigWrapper = false, isStandaloneConfigWrapper = false } = {},
+) {
   if (!isPlainObject(rawConfig)) {
     return {
       foundConfigKeys: false,
@@ -368,9 +371,13 @@ function extractPluginConfigValues(rawConfig, insideConfigWrapper = false, isRoo
   let foundConfigKeys = false;
   let foundNestedObject = false;
   const unknownScalarKeys = [];
-  const isDirectConfigObject = insideConfigWrapper || hasPluginConfigKeys(rawConfig);
+  const objectKeys = Object.keys(rawConfig);
+  const hasDirectConfigKeys = hasPluginConfigKeys(rawConfig);
+  const hasObjectChildren = objectKeys.some((key) => isPlainObject(rawConfig[key]));
+  const validateUnknownKeys =
+    insideConfigWrapper || (isRoot && hasDirectConfigKeys && !hasObjectChildren);
 
-  for (const key of Object.keys(rawConfig)) {
+  for (const key of objectKeys) {
     const value = rawConfig[key];
 
     if (PLUGIN_CONFIG_KEYS.has(key)) {
@@ -383,17 +390,22 @@ function extractPluginConfigValues(rawConfig, insideConfigWrapper = false, isRoo
       throw new Error("Plugin config wrapper key `config` must be an object when provided.");
     }
 
+    if (validateUnknownKeys) {
+      unknownScalarKeys.push(key);
+      continue;
+    }
+
     if (isPlainObject(value)) {
       foundNestedObject = true;
-      const nested = extractPluginConfigValues(value, insideConfigWrapper || key === "config", false);
+      const nested = extractPluginConfigValues(value, {
+        isRoot: false,
+        insideConfigWrapper: key === "config",
+        isStandaloneConfigWrapper: isRoot && key === "config" && objectKeys.length === 1,
+      });
       foundConfigKeys = foundConfigKeys || nested.foundConfigKeys;
       foundNestedObject = foundNestedObject || nested.foundNestedObject;
       Object.assign(values, nested.values);
       continue;
-    }
-
-    if (isDirectConfigObject) {
-      unknownScalarKeys.push(key);
     }
   }
 
@@ -401,8 +413,13 @@ function extractPluginConfigValues(rawConfig, insideConfigWrapper = false, isRoo
     throw new Error(`Unsupported plugin config key: ${unknownScalarKeys[0]}`);
   }
 
-  if ((insideConfigWrapper || isRoot) && !foundConfigKeys && !foundNestedObject && Object.keys(rawConfig).length > 0) {
-    throw new Error(`Unsupported plugin config key: ${Object.keys(rawConfig)[0]}`);
+  if (
+    (isRoot || isStandaloneConfigWrapper)
+    && !foundConfigKeys
+    && !foundNestedObject
+    && objectKeys.length > 0
+  ) {
+    throw new Error(`Unsupported plugin config key: ${objectKeys[0]}`);
   }
 
   return {
