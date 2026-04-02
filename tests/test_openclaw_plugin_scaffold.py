@@ -29,6 +29,18 @@ def _run_node_json(snippet: str) -> dict[str, object] | list[object]:
     return json.loads(proc.stdout)
 
 
+def _write_fake_vault_agent(tmp_path: Path) -> Path:
+    script = tmp_path / "fake-vault-agent"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "print(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd()}))\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
 def test_openclaw_plugin_manifest_declares_llm_vault_plugin() -> None:
     payload = json.loads((PLUGIN_DIR / "openclaw.plugin.json").read_text(encoding="utf-8"))
     assert payload == {
@@ -84,18 +96,15 @@ def test_openclaw_plugin_package_points_at_extension_module() -> None:
 
 def test_openclaw_plugin_docs_are_honest_about_scope() -> None:
     content = (ROOT / "docs" / "openclaw-plugin.md").read_text(encoding="utf-8")
-    assert "repo-local scaffold" in content
+    assert "repo-local plugin package" in content
     assert "vault-ops" in content
     assert "operator-only" in content
-    assert "repoRoot" in content
-    assert "vaultAgentPath" in content
-    assert "manual" in content.lower()
-    assert "Svenni" in content
+    assert "plugins.load.paths" in content
+    assert "plugins.entries.llm-vault.config" in content
+    assert "llm_vault_status" in content
+    assert "llm_vault_search_redacted" in content
     assert "plugin-config.example.json" in content
-    assert "copy that directory" in content
-    assert "loader reads `package.json`" in content
-    assert "OpenClaw Agent Setup Flow" in content
-    assert '"plugins"' in content
+    assert "manual and operator-run" in content
 
 
 def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enablement() -> None:
@@ -106,9 +115,10 @@ def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enab
     assert "plugin-config.example.json" in readme
     assert "vault-agent" in readme
     assert "operator-only" in readme
-    assert "manual" in readme.lower()
-    assert '"plugins"' in readme
-    assert "LLM_VAULT_DB_PASSWORD" in readme
+    assert "plugins.load.paths" in readme
+    assert "plugins.entries.llm-vault.config" in readme
+    assert "llm_vault_status" in readme
+    assert "llm_vault_search_redacted" in readme
     assert example == {
         "repoRoot": "/absolute/path/to/llm-vault",
         "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
@@ -126,8 +136,9 @@ def test_openclaw_agent_setup_doc_covers_required_inputs_and_plugin_stub() -> No
     assert "--max 300" in content
     assert "initializes the local registry/vector backend state" in content
     assert "usable-yet-degraded" in content
-    assert "timeoutSeconds" in content
-    assert '"plugins"' in content
+    assert "plugins.load.paths" in content
+    assert "plugins.entries.llm-vault.config" in content
+    assert "llm_vault_search_redacted" in content
     assert "manual and operator-run" in content
 
 
@@ -135,9 +146,13 @@ def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
     content = (PLUGIN_DIR / "index.js").read_text(encoding="utf-8")
     assert "SAFE_SURFACE" in content
     assert 'const COMMAND_NAME = "vault"' in content
-    assert 'runVaultAgent(["status"], rawConfig)' in content
-    assert 'args.push("search-redacted"' in content
-    assert "resolvePluginConfig" in content
+    assert 'const TOOL_STATUS_NAME = "llm_vault_status"' in content
+    assert 'const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted"' in content
+    assert "PLUGIN_CONFIG_RUNTIME_KEYS" in content
+    assert '"meta"' in content
+    assert 'api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME })' in content
+    assert 'api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME })' in content
+    assert 'buildSearchRedactedArgs' in content
     assert "operator-only" in content
 
 
@@ -145,14 +160,27 @@ def test_openclaw_plugin_module_exports_expected_shape() -> None:
     payload = _run_node_json(
         f"""
 import plugin from {json.dumps(PLUGIN_INDEX)};
-const calls = [];
+const commands = [];
+const tools = [];
 plugin.register({{
+  pluginConfig: {{}},
   registerCommand(command) {{
-    calls.push({{
+    commands.push({{
       name: command.name,
       description: command.description,
       acceptsArgs: command.acceptsArgs,
       hasHandler: typeof command.handler === "function",
+    }});
+  }},
+  registerTool(tool, opts) {{
+    tools.push({{
+      name: tool.name,
+      description: tool.description,
+      label: tool.label,
+      optionName: opts?.name ?? null,
+      hasExecute: typeof tool.execute === "function",
+      required: tool.parameters?.required ?? [],
+      parameterKeys: Object.keys(tool.parameters?.properties ?? {{}}),
     }});
   }},
 }});
@@ -161,7 +189,8 @@ console.log(JSON.stringify({{
   name: plugin.name,
   description: plugin.description,
   configSchema: plugin.configSchema,
-  calls,
+  commands,
+  tools,
 }}));
 """
     )
@@ -171,13 +200,33 @@ console.log(JSON.stringify({{
     assert payload["id"] == "llm-vault"
     assert payload["name"] == "llm-vault"
     assert payload["configSchema"]["properties"]["timeoutSeconds"]["default"] == 120
-    assert payload["calls"] == [
+    assert payload["commands"] == [
         {
             "name": "vault",
             "description": "Run safe llm-vault status and redacted search commands.",
             "acceptsArgs": True,
             "hasHandler": True,
         }
+    ]
+    assert payload["tools"] == [
+        {
+            "name": "llm_vault_status",
+            "description": "Return llm-vault agent-safe status from vault-agent.",
+            "label": "Vault Status",
+            "optionName": "llm_vault_status",
+            "hasExecute": True,
+            "required": [],
+            "parameterKeys": [],
+        },
+        {
+            "name": "llm_vault_search_redacted",
+            "description": "Run llm-vault redacted search through vault-agent with narrow safe filters.",
+            "label": "Vault Search Redacted",
+            "optionName": "llm_vault_search_redacted",
+            "hasExecute": True,
+            "required": ["query"],
+            "parameterKeys": ["query", "source", "topK", "fromDate", "toDate", "taxonomy", "categoryPrimary"],
+        },
     ]
 
 
@@ -204,7 +253,7 @@ console.log(JSON.stringify({{
     assert payload["pluginConfigSchema"] == manifest["configSchema"] == payload["exportedConfigSchema"]
 
 
-def test_openclaw_plugin_config_defaults_and_overrides_are_stable(tmp_path: Path) -> None:
+def test_openclaw_plugin_config_defaults_overrides_and_runtime_wrappers_are_stable(tmp_path: Path) -> None:
     repo_root = tmp_path / "alt-vault"
     payload = _run_node_json(
         f"""
@@ -215,11 +264,22 @@ console.log(JSON.stringify({{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
+    meta: {{ runtime: "command" }},
+  }}),
+  wrapped: resolvePluginConfig({{
+    path: "/plugins/llm-vault-openclaw",
+    config: {{
+      repoRoot: {json.dumps(str(repo_root))},
+      vaultAgentPath: "./bin/vault-agent",
+      timeoutSeconds: 45,
+    }},
+    meta: {{ runtime: "entry" }},
   }}),
   invocation: buildVaultAgentInvocation(["status"], {{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
+    meta: {{ runtime: "command" }},
   }}),
 }}));
 """
@@ -235,6 +295,7 @@ console.log(JSON.stringify({{
         "vaultAgentPath": str(repo_root / "bin" / "vault-agent"),
         "timeoutSeconds": 45,
     }
+    assert payload["wrapped"] == payload["override"]
     assert payload["invocation"] == {
         "file": str(repo_root / "bin" / "vault-agent"),
         "args": ["--timeout-seconds", "45", "status"],
@@ -248,7 +309,7 @@ def test_openclaw_plugin_rejects_unknown_or_invalid_config() -> None:
         f"""
 import {{ resolvePluginConfig }} from {json.dumps(PLUGIN_INDEX)};
 const failures = [];
-for (const rawConfig of [{{ unexpected: true }}, {{ timeoutSeconds: 0 }}, {{ repoRoot: 7 }}, "bad"]) {{
+for (const rawConfig of [{{ unexpected: true }}, {{ timeoutSeconds: 0 }}, {{ repoRoot: 7 }}, {{ config: "bad" }}, "bad"]) {{
   try {{
     resolvePluginConfig(rawConfig);
   }} catch (error) {{
@@ -265,6 +326,7 @@ console.log(JSON.stringify(failures));
         "Unsupported plugin config key: unexpected",
         "timeoutSeconds must be an integer between 1 and 300.",
         "repoRoot must be a string when provided.",
+        "Plugin config wrapper key `config` must be an object when provided.",
         "Plugin config must be an object.",
     ]
 
@@ -272,7 +334,7 @@ console.log(JSON.stringify(failures));
 def test_openclaw_plugin_search_parser_enforces_redacted_backend_and_safe_filters() -> None:
     payload = _run_node_json(
         f"""
-import {{ parseSearchArgs, tokenizeArgs }} from {json.dumps(PLUGIN_INDEX)};
+import {{ buildSearchRedactedArgs, parseSearchArgs, tokenizeArgs }} from {json.dumps(PLUGIN_INDEX)};
 console.log(JSON.stringify({{
   tokens: tokenizeArgs('search --source docs --top-k 3 --from-date 2026-01-01 --taxonomy finance "tax receipt"'),
   parsed: parseSearchArgs([
@@ -287,6 +349,13 @@ console.log(JSON.stringify({{
     "tax",
     "receipt",
   ]),
+  built: buildSearchRedactedArgs({{
+    query: "tax receipt",
+    source: "docs",
+    topK: 3,
+    fromDate: "2026-01-01",
+    taxonomy: "finance",
+  }}),
 }}));
 """
     )
@@ -317,3 +386,81 @@ console.log(JSON.stringify({{
         "--taxonomy",
         "finance",
     ]
+    assert payload["built"] == payload["parsed"]
+
+
+def test_openclaw_command_runtime_handles_meta_wrapper_context(tmp_path: Path) -> None:
+    fake_agent = _write_fake_vault_agent(tmp_path)
+    payload = _run_node_json(
+        f"""
+import {{ handleVaultCommand }} from {json.dumps(PLUGIN_INDEX)};
+const result = await handleVaultCommand("status", {{
+  repoRoot: {json.dumps(str(tmp_path))},
+  vaultAgentPath: {json.dumps(str(fake_agent))},
+  timeoutSeconds: 23,
+  meta: {{ runtime: "openclaw" }},
+}});
+console.log(result);
+"""
+    )
+    if not payload:
+        return
+
+    assert payload == {
+        "argv": ["--timeout-seconds", "23", "status"],
+        "cwd": str(tmp_path),
+    }
+
+
+def test_openclaw_tool_surface_executes_redacted_backend_only(tmp_path: Path) -> None:
+    fake_agent = _write_fake_vault_agent(tmp_path)
+    payload = _run_node_json(
+        f"""
+import {{ createSearchRedactedTool }} from {json.dumps(PLUGIN_INDEX)};
+const tool = createSearchRedactedTool({{
+  repoRoot: {json.dumps(str(tmp_path))},
+  vaultAgentPath: {json.dumps(str(fake_agent))},
+  timeoutSeconds: 19,
+}});
+const result = await tool.execute("tool-call-1", {{
+  query: "tax receipt",
+  source: "docs",
+  topK: 3,
+  taxonomy: "finance",
+}});
+console.log(JSON.stringify(result));
+"""
+    )
+    if not payload:
+        return
+
+    assert payload["details"] == {
+        "backendCommand": "search-redacted",
+        "forwarded": [
+            "search-redacted",
+            "tax receipt",
+            "--source",
+            "docs",
+            "--top-k",
+            "3",
+            "--taxonomy",
+            "finance",
+        ],
+    }
+    assert len(payload["content"]) == 1
+    assert payload["content"][0]["type"] == "text"
+    assert json.loads(payload["content"][0]["text"]) == {
+        "argv": [
+            "--timeout-seconds",
+            "19",
+            "search-redacted",
+            "tax receipt",
+            "--source",
+            "docs",
+            "--top-k",
+            "3",
+            "--taxonomy",
+            "finance",
+        ],
+        "cwd": str(tmp_path),
+    }

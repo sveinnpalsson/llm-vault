@@ -1,40 +1,42 @@
-# OpenClaw Plugin Scaffold
+# OpenClaw Plugin Contract
 
-`llm-vault` includes a repo-local OpenClaw plugin scaffold at `plugins/llm-vault-openclaw/`.
+`llm-vault` includes a repo-local OpenClaw plugin package at `plugins/llm-vault-openclaw/`.
 
-Use this document for the plugin contract and safe boundary. Use [OpenClaw Agent Setup Flow](openclaw-agent-setup.md) for the straight-line install path.
+Use this document for the exact contract: safe boundary, config placement, command surface, and autonomous tool surface.
 
-## What Is Implemented
+## Implemented Surface
 
-- `openclaw.plugin.json` metadata for an `llm-vault` plugin
-- a package entry that points at `index.js`
-- a package-local `README.md`
-- `plugin-config.example.json`
-- a `/vault` command surface that shells into `vault-agent`
-- config validation for `repoRoot`, `vaultAgentPath`, and `timeoutSeconds`
+The plugin package contains:
+
+- `openclaw.plugin.json` manifest metadata
+- `package.json` that points OpenClaw at `index.js`
+- `plugin-config.example.json` for the inner runtime payload
+- a manual command surface for `/vault ...`
+- an agent tool surface for `llm_vault_status` and `llm_vault_search_redacted`
+
+This is a repo-local plugin package, not a published standalone release.
 
 ## Safe Boundary
 
-This slice keeps the safe surface narrow:
+This integration keeps the boundary narrow:
 
 - `vault-ops` remains operator-only
-- the plugin only calls `vault-agent`
-- the plugin only exposes `status` and redacted search
-- unknown config keys and unsupported search flags are rejected
-- `answer-redacted` remains deferred and is not exposed by the plugin
+- the plugin shells only into `vault-agent`
+- the tool surface maps only to `vault-agent`
+- both `/vault search` and `/vault search-redacted` are forced through redacted search
+- the agent tool surface exposes only status and redacted search
 
-In short: `vault-ops` remains operator-only, and the plugin is limited to agent-safe redacted access.
+`answer-redacted` remains out of scope for this plugin.
 
-## Current Command Surface
+## Command Surface
 
 ```text
 /vault status
 /vault search "tax receipt" --source docs --top-k 3
-/vault search-redacted "tax receipt" --source docs --top-k 3
-/vault search "budget approval" --source mail --from-date 2026-01-01 --taxonomy work
+/vault search-redacted "budget approval" --source mail --from-date 2026-01-01 --taxonomy work
 ```
 
-Safe search filters currently forwarded to `vault-agent`:
+Safe filters forwarded to `vault-agent search-redacted`:
 
 - `--source all|docs|photos|mail`
 - `--top-k 1-10`
@@ -43,15 +45,62 @@ Safe search filters currently forwarded to `vault-agent`:
 - `--taxonomy <value>`
 - `--category-primary <value>`
 
-Both `/vault search` and `/vault search-redacted` are forced through the redacted backend.
+## Tool Surface
 
-## Config Contract
+Autonomous use should go through these exact tool names:
 
-- `repoRoot`: path to the `llm-vault` checkout; defaults to the current checkout that contains this plugin scaffold, and relative paths resolve from that default repo root
-- `vaultAgentPath`: path to `vault-agent`; defaults to `./vault-agent` relative to `repoRoot`
-- `timeoutSeconds`: integer timeout from `1` to `300`; defaults to `120`
+- `llm_vault_status`
+- `llm_vault_search_redacted`
 
-Exact payload:
+`llm_vault_search_redacted` accepts:
+
+- `query`
+- `source`
+- `topK`
+- `fromDate`
+- `toDate`
+- `taxonomy`
+- `categoryPrimary`
+
+Both tools call only `vault-agent`.
+
+## Config Placement
+
+OpenClaw uses separate locations for plugin loading and plugin config:
+
+- repo-local discovery/load path: `plugins.load.paths`
+- plugin runtime config: `plugins.entries.llm-vault.config`
+
+Minimal `openclaw.json` example:
+
+```json
+{
+  "plugins": {
+    "load": {
+      "paths": [
+        "/absolute/path/to/llm-vault/plugins/llm-vault-openclaw"
+      ]
+    },
+    "allow": [
+      "llm-vault"
+    ],
+    "entries": {
+      "llm-vault": {
+        "enabled": true,
+        "config": {
+          "repoRoot": "/absolute/path/to/llm-vault",
+          "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
+          "timeoutSeconds": 120
+        }
+      }
+    }
+  }
+}
+```
+
+If you copy the package into a plugin directory that OpenClaw already scans, keep the package contents intact and omit only the `plugins.load.paths` override. The runtime payload still belongs under `plugins.entries.llm-vault.config`.
+
+The inner config payload is:
 
 ```json
 {
@@ -61,68 +110,45 @@ Exact payload:
 }
 ```
 
-Minimal OpenClaw config stub to adapt to the local loader shape:
+`plugin-config.example.json` matches that payload exactly.
+
+## Runtime Compatibility
+
+Real OpenClaw runtime contexts may attach wrapper metadata such as `meta` around command/tool invocation context. The plugin ignores those wrapper keys and only consumes the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
+
+That compatibility does not widen the backend boundary: unsupported llm-vault config keys still fail closed, and wrapper metadata is never forwarded to `vault-agent`.
+
+## Agent Allowlist
+
+No agent-block change is required for agents that already have open tool access.
+
+For an allowlisted agent, add the llm-vault tools explicitly:
 
 ```json
 {
-  "plugins": {
-    "llm-vault": {
-      "path": "/absolute/path/to/llm-vault/plugins/llm-vault-openclaw",
-      "config": {
-        "repoRoot": "/absolute/path/to/llm-vault",
-        "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
-        "timeoutSeconds": 120
+  "agents": {
+    "list": [
+      {
+        "id": "my-agent",
+        "tools": {
+          "alsoAllow": [
+            "llm_vault_status",
+            "llm_vault_search_redacted"
+          ]
+        }
       }
-    }
+    ]
   }
 }
 ```
 
-The outer OpenClaw config shape may vary by local install. The inner `config` object above is the actual repo-supported plugin contract.
-
-## Repo-Local Wiring
-
-1. Install `llm-vault` from the checkout you want the plugin to use with `python -m pip install -e .[dev]`.
-2. Keep `vault-ops.toml` and `LLM_VAULT_DB_PASSWORD` configured for that same checkout.
-3. Point your local OpenClaw plugin loader at `plugins/llm-vault-openclaw/`, or copy that directory into whatever local plugin folder your OpenClaw setup already scans.
-4. Keep the package contents intact when copying it. This slice assumes the loader reads `package.json`, then loads `./index.js` from the declared `openclaw.extensions` entry.
-5. Copy `plugins/llm-vault-openclaw/plugin-config.example.json` into your OpenClaw plugin config and edit it for the checkout you want the plugin to use.
-6. If your OpenClaw process cannot rely on the default repo-local wrapper path, configure the plugin explicitly.
-
-If you prefer an installed entry point instead of the repo wrapper, set `vaultAgentPath` to that executable and keep `repoRoot` pointed at the checkout that owns `vault-ops.toml`.
-
-Example repo-local enablement snippets:
-
-```text
-plugin path: /absolute/path/to/llm-vault/plugins/llm-vault-openclaw
-repoRoot: /absolute/path/to/llm-vault
-vaultAgentPath: /absolute/path/to/llm-vault/vault-agent
-```
-
-```text
-copied plugin path: /absolute/path/to/openclaw/plugins/llm-vault-openclaw
-repoRoot: /absolute/path/to/llm-vault
-vaultAgentPath: /absolute/path/to/llm-vault/vault-agent
-```
-
-## What An Agent Can Reliably Infer
-
-An OpenClaw agent skimming this repo should now be able to infer:
-
-- the plugin path is repo-local, not a published release package
-- the supported safe surface is status plus redacted search
-- the plugin depends on the same checkout that owns `vault-ops.toml`
-- the user still needs to supply local model endpoints, content roots, and secrets
-
-## Current Limitations
-
-- this is a repo-local scaffold, not a finished standalone published plugin package
-- final live fresh-agent validation is still manual and operator-run
-- Svenni still needs to perform the clean-agent validation before release claims should expand
+If the agent already uses `tools.allow`, add those same tool names there instead of `alsoAllow`.
 
 ## Validation Status
 
-- plugin metadata, config defaults, package wiring, and command boundary are covered by automated tests
-- package-local install docs and example config are covered by automated tests
-- the agent-oriented setup flow is documented in [OpenClaw Agent Setup Flow](openclaw-agent-setup.md)
-- live OpenClaw install/discovery remains covered only by the manual checklist in [Manual OpenClaw Agent Validation](manual-openclaw-agent-validation.md)
+- plugin metadata, config defaults, runtime compatibility, and safe boundary are covered by automated tests
+- the command surface and tool surface contracts are covered by automated tests
+- package-local install docs are covered by automated tests
+- live OpenClaw validation remains manual and operator-run
+
+See [OpenClaw Agent Setup Flow](openclaw-agent-setup.md) for the install path and [Manual OpenClaw Agent Validation](manual-openclaw-agent-validation.md) for the final manual checklist.

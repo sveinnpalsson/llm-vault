@@ -46,13 +46,30 @@ vault-ops search "tax receipt" --json
 
 The first `vault-ops update` initializes the local registry/vector state for that checkout. `--max` means "process at most N docs/photos/mail source items in this run", so a bounded first pass can still leave status/search usable but degraded.
 
-7. Wire the repo-local OpenClaw plugin scaffold from `plugins/llm-vault-openclaw/` into your local OpenClaw plugin path. Copy `plugins/llm-vault-openclaw/plugin-config.example.json` into your local plugin config first, then edit it. If your local setup cannot rely on the default repo wrapper path, configure the plugin with the checkout root and explicit `vault-agent` path:
+7. Wire the repo-local OpenClaw plugin package from `plugins/llm-vault-openclaw/`. Use `plugins.load.paths` for repo-local discovery and `plugins.entries.llm-vault.config` for the plugin payload. Minimal example:
 
 ```json
 {
-  "repoRoot": "/absolute/path/to/llm-vault",
-  "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
-  "timeoutSeconds": 120
+  "plugins": {
+    "load": {
+      "paths": [
+        "/absolute/path/to/llm-vault/plugins/llm-vault-openclaw"
+      ]
+    },
+    "allow": [
+      "llm-vault"
+    ],
+    "entries": {
+      "llm-vault": {
+        "enabled": true,
+        "config": {
+          "repoRoot": "/absolute/path/to/llm-vault",
+          "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
+          "timeoutSeconds": 120
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -71,7 +88,7 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-10. From OpenClaw, verify the plugin only exposes `/vault status` and redacted search commands.
+10. From OpenClaw, verify the plugin exposes `/vault status`, the redacted `/vault search ...` command path, and the autonomous tools `llm_vault_status` and `llm_vault_search_redacted`.
 11. Record the exact commands used, whether the installed entry points resolved correctly, whether the plugin found the intended checkout, and any setup friction for follow-up work.
 
 ## Notes

@@ -54,6 +54,8 @@ def test_readme_mentions_required_db_password() -> None:
     assert "mkdir -p state" in content
     assert "--max 300" in content
     assert "usable but degraded" in content
+    assert "What An OpenClaw Agent Can Infer From This Repo" not in content
+    assert "What Remains Manual" not in content
 
 
 def test_tracked_release_files_do_not_contain_personal_machine_paths() -> None:

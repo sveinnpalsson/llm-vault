@@ -18,7 +18,22 @@ const PLUGIN_NAME = "llm-vault";
 const PLUGIN_DESCRIPTION = "Safe llm-vault OpenClaw plugin scaffold backed by vault-agent.";
 const COMMAND_NAME = "vault";
 const COMMAND_DESCRIPTION = "Run safe llm-vault status and redacted search commands.";
+const TOOL_STATUS_NAME = "llm_vault_status";
+const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted";
+const TOOL_STATUS_DESCRIPTION = "Return llm-vault agent-safe status from vault-agent.";
+const TOOL_SEARCH_REDACTED_DESCRIPTION =
+  "Run llm-vault redacted search through vault-agent with narrow safe filters.";
 const PLUGIN_CONFIG_KEYS = new Set(["repoRoot", "vaultAgentPath", "timeoutSeconds"]);
+const PLUGIN_CONFIG_RUNTIME_KEYS = new Set([
+  "apiKey",
+  "config",
+  "enabled",
+  "env",
+  "hooks",
+  "meta",
+  "path",
+  "subagent",
+]);
 const SAFE_SURFACE = Object.freeze([
   {
     name: "status",
@@ -39,6 +54,54 @@ const SAFE_BOUNDARY_LINES = Object.freeze([
   "This plugin only exposes the agent-safe vault-agent surface.",
   "Raw vault-ops update/repair/full-clearance workflows remain operator-only.",
 ]);
+const STATUS_TOOL_PARAMETERS = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {},
+});
+const SEARCH_TOOL_PARAMETERS = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: ["query"],
+  properties: {
+    query: {
+      type: "string",
+      minLength: 1,
+      description: "Redacted search query text.",
+    },
+    source: {
+      type: "string",
+      enum: ["all", "docs", "photos", "mail"],
+      description: "Restrict results to one indexed source family.",
+    },
+    topK: {
+      type: "integer",
+      minimum: 1,
+      maximum: MAX_SAFE_TOP_K,
+      description: `Maximum result count from 1 to ${MAX_SAFE_TOP_K}.`,
+    },
+    fromDate: {
+      type: "string",
+      pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+      description: "Lower inclusive date bound in YYYY-MM-DD format.",
+    },
+    toDate: {
+      type: "string",
+      pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+      description: "Upper inclusive date bound in YYYY-MM-DD format.",
+    },
+    taxonomy: {
+      type: "string",
+      minLength: 1,
+      description: "Optional taxonomy filter forwarded to vault-agent.",
+    },
+    categoryPrimary: {
+      type: "string",
+      minLength: 1,
+      description: "Optional primary category filter forwarded to vault-agent.",
+    },
+  },
+});
 const CONFIG_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -75,6 +138,10 @@ function usage() {
 
 function normalize(text) {
   return String(text ?? "").trim();
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function optionalConfigString(raw, keyName) {
@@ -176,14 +243,15 @@ function parsePositiveInt(raw) {
   return parsed;
 }
 
-function parseSearchArgs(tokens) {
-  const args = [];
-  let source = "all";
-  let topK = 5;
-  let fromDate = null;
-  let toDate = null;
-  let taxonomy = null;
-  let categoryPrimary = null;
+function parseSearchFilters(tokens) {
+  const filters = {
+    source: "all",
+    topK: 5,
+    fromDate: null,
+    toDate: null,
+    taxonomy: null,
+    categoryPrimary: null,
+  };
   const queryTokens = [];
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -193,33 +261,33 @@ function parseSearchArgs(tokens) {
       if (!SOURCE_CHOICES.has(value)) {
         throw new Error("source must be one of all, docs, photos, or mail.");
       }
-      source = value;
+      filters.source = value;
       index += 1;
       continue;
     }
     if (token === "--top-k") {
       const value = ensureOptionValue(tokens, index, "--top-k");
-      topK = parsePositiveInt(value);
+      filters.topK = parsePositiveInt(value);
       index += 1;
       continue;
     }
     if (token === "--from-date") {
-      fromDate = parseIsoDate(ensureOptionValue(tokens, index, "--from-date"), "--from-date");
+      filters.fromDate = parseIsoDate(ensureOptionValue(tokens, index, "--from-date"), "--from-date");
       index += 1;
       continue;
     }
     if (token === "--to-date") {
-      toDate = parseIsoDate(ensureOptionValue(tokens, index, "--to-date"), "--to-date");
+      filters.toDate = parseIsoDate(ensureOptionValue(tokens, index, "--to-date"), "--to-date");
       index += 1;
       continue;
     }
     if (token === "--taxonomy") {
-      taxonomy = normalize(ensureOptionValue(tokens, index, "--taxonomy"));
+      filters.taxonomy = normalize(ensureOptionValue(tokens, index, "--taxonomy"));
       index += 1;
       continue;
     }
     if (token === "--category-primary") {
-      categoryPrimary = normalize(ensureOptionValue(tokens, index, "--category-primary"));
+      filters.categoryPrimary = normalize(ensureOptionValue(tokens, index, "--category-primary"));
       index += 1;
       continue;
     }
@@ -234,7 +302,38 @@ function parseSearchArgs(tokens) {
     throw new Error("search requires a query.");
   }
 
-  args.push("search-redacted", query, "--source", source, "--top-k", String(topK));
+  return {
+    query,
+    ...filters,
+  };
+}
+
+function buildSearchRedactedArgs(options) {
+  const query = optionalConfigString(options?.query, "query");
+  if (!query) {
+    throw new Error("query must be a non-empty string.");
+  }
+
+  const source = normalize(options?.source || "all");
+  if (!SOURCE_CHOICES.has(source)) {
+    throw new Error("source must be one of all, docs, photos, or mail.");
+  }
+
+  const topK = parsePositiveInt(options?.topK ?? 5);
+  const fromDate = options?.fromDate === null || options?.fromDate === undefined
+    ? null
+    : parseIsoDate(options.fromDate, "fromDate");
+  const toDate = options?.toDate === null || options?.toDate === undefined
+    ? null
+    : parseIsoDate(options.toDate, "toDate");
+  const taxonomy = options?.taxonomy === null || options?.taxonomy === undefined
+    ? null
+    : optionalConfigString(options.taxonomy, "taxonomy");
+  const categoryPrimary = options?.categoryPrimary === null || options?.categoryPrimary === undefined
+    ? null
+    : optionalConfigString(options.categoryPrimary, "categoryPrimary");
+
+  const args = ["search-redacted", query, "--source", source, "--top-k", String(topK)];
   if (fromDate) {
     args.push("--from-date", fromDate);
   }
@@ -250,6 +349,10 @@ function parseSearchArgs(tokens) {
   return args;
 }
 
+function parseSearchArgs(tokens) {
+  return buildSearchRedactedArgs(parseSearchFilters(tokens));
+}
+
 function parseTimeoutSeconds(raw) {
   const parsed = Number.parseInt(String(raw), 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_TIMEOUT_SECONDS) {
@@ -262,23 +365,35 @@ function resolvePluginConfig(rawConfig = {}) {
   if (rawConfig === null || rawConfig === undefined) {
     rawConfig = {};
   }
-  if (typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+  if (!isPlainObject(rawConfig)) {
     throw new Error("Plugin config must be an object.");
   }
 
-  for (const key of Object.keys(rawConfig)) {
-    if (!PLUGIN_CONFIG_KEYS.has(key)) {
-      throw new Error(`Unsupported plugin config key: ${key}`);
-    }
+  if ("config" in rawConfig && rawConfig.config !== null && rawConfig.config !== undefined && !isPlainObject(rawConfig.config)) {
+    throw new Error("Plugin config wrapper key `config` must be an object when provided.");
   }
 
-  const repoRootValue = optionalConfigString(rawConfig.repoRoot, "repoRoot");
+  const candidate = isPlainObject(rawConfig.config) ? rawConfig.config : rawConfig;
+  const normalizedConfig = {};
+
+  for (const key of Object.keys(candidate)) {
+    if (!PLUGIN_CONFIG_KEYS.has(key)) {
+      if (PLUGIN_CONFIG_RUNTIME_KEYS.has(key)) {
+        continue;
+      }
+      throw new Error(`Unsupported plugin config key: ${key}`);
+    }
+    normalizedConfig[key] = candidate[key];
+  }
+
+  const repoRootValue = optionalConfigString(normalizedConfig.repoRoot, "repoRoot");
   const repoRoot = repoRootValue ? path.resolve(REPO_ROOT, repoRootValue) : REPO_ROOT;
-  const vaultAgentPathValue = optionalConfigString(rawConfig.vaultAgentPath, "vaultAgentPath") || DEFAULT_VAULT_AGENT_PATH;
+  const vaultAgentPathValue =
+    optionalConfigString(normalizedConfig.vaultAgentPath, "vaultAgentPath") || DEFAULT_VAULT_AGENT_PATH;
   const vaultAgentPath = path.isAbsolute(vaultAgentPathValue)
     ? vaultAgentPathValue
     : path.resolve(repoRoot, vaultAgentPathValue);
-  const timeoutSeconds = parseTimeoutSeconds(rawConfig.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS);
+  const timeoutSeconds = parseTimeoutSeconds(normalizedConfig.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS);
 
   return {
     repoRoot,
@@ -301,11 +416,61 @@ async function runVaultAgent(args, rawConfig) {
   const invocation = buildVaultAgentInvocation(args, rawConfig);
   const { stdout, stderr } = await execFileAsync(invocation.file, invocation.args, {
     cwd: invocation.cwd,
+    encoding: "utf8",
     timeout: invocation.timeoutMs,
     maxBuffer: 1024 * 1024,
     shell: false,
   });
   return [stdout?.trim(), stderr?.trim()].filter(Boolean).join("\n").trim() || "(no output)";
+}
+
+function formatToolResult(text, details = {}) {
+  return {
+    content: [
+      {
+        type: "text",
+        text,
+      },
+    ],
+    details,
+  };
+}
+
+async function runStatus(rawConfig) {
+  return runVaultAgent(["status"], rawConfig);
+}
+
+async function runSearchRedacted(options, rawConfig) {
+  return runVaultAgent(buildSearchRedactedArgs(options), rawConfig);
+}
+
+function createStatusTool(rawConfig) {
+  return {
+    name: TOOL_STATUS_NAME,
+    label: "Vault Status",
+    description: TOOL_STATUS_DESCRIPTION,
+    parameters: STATUS_TOOL_PARAMETERS,
+    async execute() {
+      const text = await runStatus(rawConfig);
+      return formatToolResult(text, { backendCommand: "status" });
+    },
+  };
+}
+
+function createSearchRedactedTool(rawConfig) {
+  return {
+    name: TOOL_SEARCH_REDACTED_NAME,
+    label: "Vault Search Redacted",
+    description: TOOL_SEARCH_REDACTED_DESCRIPTION,
+    parameters: SEARCH_TOOL_PARAMETERS,
+    async execute(_toolCallId, params) {
+      const text = await runSearchRedacted(params, rawConfig);
+      return formatToolResult(text, {
+        backendCommand: "search-redacted",
+        forwarded: buildSearchRedactedArgs(params),
+      });
+    },
+  };
 }
 
 async function handleVaultCommand(rawArgs, rawConfig) {
@@ -319,7 +484,7 @@ async function handleVaultCommand(rawArgs, rawConfig) {
     if (rest.length > 0) {
       throw new Error("status does not accept extra arguments.");
     }
-    return runVaultAgent(["status"], rawConfig);
+    return runStatus(rawConfig);
   }
 
   if (command === "search" || command === "search-redacted") {
@@ -335,19 +500,24 @@ const plugin = {
   description: PLUGIN_DESCRIPTION,
   configSchema: CONFIG_SCHEMA,
   register(api) {
+    const pluginConfig = resolvePluginConfig(api.pluginConfig);
+
     api.registerCommand({
       name: COMMAND_NAME,
       description: COMMAND_DESCRIPTION,
       acceptsArgs: true,
       handler: async (ctx) => {
         try {
-          return { text: await handleVaultCommand(ctx?.args, ctx?.config) };
+          return { text: await handleVaultCommand(ctx?.args, ctx?.config ?? pluginConfig) };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return { text: `${message}\n\n${usage()}` };
         }
       },
     });
+
+    api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME });
+    api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME });
   },
 };
 
@@ -360,9 +530,22 @@ export {
   PLUGIN_NAME,
   SAFE_BOUNDARY_LINES,
   SAFE_SURFACE,
+  SEARCH_TOOL_PARAMETERS,
+  STATUS_TOOL_PARAMETERS,
+  TOOL_SEARCH_REDACTED_DESCRIPTION,
+  TOOL_SEARCH_REDACTED_NAME,
+  TOOL_STATUS_DESCRIPTION,
+  TOOL_STATUS_NAME,
   buildVaultAgentInvocation,
+  buildSearchRedactedArgs,
+  createSearchRedactedTool,
+  createStatusTool,
+  formatToolResult,
   handleVaultCommand,
   parseSearchArgs,
+  parseSearchFilters,
+  runSearchRedacted,
+  runStatus,
   resolvePluginConfig,
   tokenizeArgs,
   usage,
