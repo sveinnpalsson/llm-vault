@@ -12,7 +12,7 @@ The plugin package contains:
 - `package.json` that points OpenClaw at `index.js`
 - `plugin-config.example.json` for the inner runtime payload
 - a manual command surface for `/vault ...`
-- an agent tool surface for `llm_vault_status` and `llm_vault_search_redacted`
+- an agent tool surface for `llm_vault_status` and `llm_vault_search`
 
 This is a repo-local plugin package, not a published standalone release.
 
@@ -50,9 +50,9 @@ Safe filters forwarded to `vault-agent search-redacted`:
 Autonomous use should go through these exact tool names:
 
 - `llm_vault_status`
-- `llm_vault_search_redacted`
+- `llm_vault_search`
 
-`llm_vault_search_redacted` accepts:
+`llm_vault_search` accepts:
 
 - `query`
 - `source`
@@ -63,6 +63,8 @@ Autonomous use should go through these exact tool names:
 - `categoryPrimary`
 
 Both tools call only `vault-agent`.
+
+Planned direction: keep a single `llm_vault_search` tool name and derive the effective search clearance/level from config or policy, potentially per-agent or per-plugin. That is not implemented yet; today the tool still runs redacted-only and safe by default.
 
 ## Config Placement
 
@@ -114,7 +116,7 @@ The inner config payload is:
 
 ## Runtime Compatibility
 
-Real OpenClaw runtime contexts may attach wrapper metadata such as `meta` around command/tool invocation context. The plugin ignores those wrapper keys and only consumes the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
+Real OpenClaw runtime contexts may attach wrapper/context objects such as `meta`, `wizard`, or similar envelopes around command/tool invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and only consumes the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
 
 That compatibility does not widen the backend boundary: unsupported llm-vault config keys still fail closed, and wrapper metadata is never forwarded to `vault-agent`.
 
@@ -133,7 +135,7 @@ For an allowlisted agent, add the llm-vault tools explicitly:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search_redacted"
+            "llm_vault_search"
           ]
         }
       }

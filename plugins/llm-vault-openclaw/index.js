@@ -19,21 +19,11 @@ const PLUGIN_DESCRIPTION = "Safe llm-vault OpenClaw plugin scaffold backed by va
 const COMMAND_NAME = "vault";
 const COMMAND_DESCRIPTION = "Run safe llm-vault status and redacted search commands.";
 const TOOL_STATUS_NAME = "llm_vault_status";
-const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted";
+const TOOL_SEARCH_NAME = "llm_vault_search";
 const TOOL_STATUS_DESCRIPTION = "Return llm-vault agent-safe status from vault-agent.";
-const TOOL_SEARCH_REDACTED_DESCRIPTION =
+const TOOL_SEARCH_DESCRIPTION =
   "Run llm-vault redacted search through vault-agent with narrow safe filters.";
 const PLUGIN_CONFIG_KEYS = new Set(["repoRoot", "vaultAgentPath", "timeoutSeconds"]);
-const PLUGIN_CONFIG_RUNTIME_KEYS = new Set([
-  "apiKey",
-  "config",
-  "enabled",
-  "env",
-  "hooks",
-  "meta",
-  "path",
-  "subagent",
-]);
 const SAFE_SURFACE = Object.freeze([
   {
     name: "status",
@@ -361,7 +351,68 @@ function parseTimeoutSeconds(raw) {
   return parsed;
 }
 
-function resolvePluginConfig(rawConfig = {}) {
+function hasPluginConfigKeys(value) {
+  return isPlainObject(value) && Object.keys(value).some((key) => PLUGIN_CONFIG_KEYS.has(key));
+}
+
+function extractPluginConfigValues(rawConfig, insideConfigWrapper = false, isRoot = true) {
+  if (!isPlainObject(rawConfig)) {
+    return {
+      foundConfigKeys: false,
+      foundNestedObject: false,
+      values: {},
+    };
+  }
+
+  const values = {};
+  let foundConfigKeys = false;
+  let foundNestedObject = false;
+  const unknownScalarKeys = [];
+  const isDirectConfigObject = insideConfigWrapper || hasPluginConfigKeys(rawConfig);
+
+  for (const key of Object.keys(rawConfig)) {
+    const value = rawConfig[key];
+
+    if (PLUGIN_CONFIG_KEYS.has(key)) {
+      values[key] = value;
+      foundConfigKeys = true;
+      continue;
+    }
+
+    if (key === "config" && value !== null && value !== undefined && !isPlainObject(value)) {
+      throw new Error("Plugin config wrapper key `config` must be an object when provided.");
+    }
+
+    if (isPlainObject(value)) {
+      foundNestedObject = true;
+      const nested = extractPluginConfigValues(value, insideConfigWrapper || key === "config", false);
+      foundConfigKeys = foundConfigKeys || nested.foundConfigKeys;
+      foundNestedObject = foundNestedObject || nested.foundNestedObject;
+      Object.assign(values, nested.values);
+      continue;
+    }
+
+    if (isDirectConfigObject) {
+      unknownScalarKeys.push(key);
+    }
+  }
+
+  if (unknownScalarKeys.length > 0) {
+    throw new Error(`Unsupported plugin config key: ${unknownScalarKeys[0]}`);
+  }
+
+  if ((insideConfigWrapper || isRoot) && !foundConfigKeys && !foundNestedObject && Object.keys(rawConfig).length > 0) {
+    throw new Error(`Unsupported plugin config key: ${Object.keys(rawConfig)[0]}`);
+  }
+
+  return {
+    foundConfigKeys,
+    foundNestedObject,
+    values,
+  };
+}
+
+function resolvePluginConfig(rawConfig = {}, baseConfig = null) {
   if (rawConfig === null || rawConfig === undefined) {
     rawConfig = {};
   }
@@ -369,31 +420,34 @@ function resolvePluginConfig(rawConfig = {}) {
     throw new Error("Plugin config must be an object.");
   }
 
-  if ("config" in rawConfig && rawConfig.config !== null && rawConfig.config !== undefined && !isPlainObject(rawConfig.config)) {
-    throw new Error("Plugin config wrapper key `config` must be an object when provided.");
-  }
-
-  const candidate = isPlainObject(rawConfig.config) ? rawConfig.config : rawConfig;
-  const normalizedConfig = {};
-
-  for (const key of Object.keys(candidate)) {
-    if (!PLUGIN_CONFIG_KEYS.has(key)) {
-      if (PLUGIN_CONFIG_RUNTIME_KEYS.has(key)) {
-        continue;
-      }
-      throw new Error(`Unsupported plugin config key: ${key}`);
+  const extractedConfig = extractPluginConfigValues(rawConfig).values;
+  const base = baseConfig && isPlainObject(baseConfig)
+    ? {
+      repoRoot: optionalConfigString(baseConfig.repoRoot, "repoRoot") || REPO_ROOT,
+      vaultAgentPath:
+          optionalConfigString(baseConfig.vaultAgentPath, "vaultAgentPath")
+          || path.resolve(
+            optionalConfigString(baseConfig.repoRoot, "repoRoot") || REPO_ROOT,
+            DEFAULT_VAULT_AGENT_PATH,
+          ),
+      timeoutSeconds: parseTimeoutSeconds(baseConfig.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS),
     }
-    normalizedConfig[key] = candidate[key];
-  }
+    : {
+      repoRoot: REPO_ROOT,
+      vaultAgentPath: path.resolve(REPO_ROOT, DEFAULT_VAULT_AGENT_PATH),
+      timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+    };
 
-  const repoRootValue = optionalConfigString(normalizedConfig.repoRoot, "repoRoot");
-  const repoRoot = repoRootValue ? path.resolve(REPO_ROOT, repoRootValue) : REPO_ROOT;
+  const repoRootValue = optionalConfigString(extractedConfig.repoRoot, "repoRoot");
+  const repoRoot = repoRootValue ? path.resolve(REPO_ROOT, repoRootValue) : base.repoRoot;
   const vaultAgentPathValue =
-    optionalConfigString(normalizedConfig.vaultAgentPath, "vaultAgentPath") || DEFAULT_VAULT_AGENT_PATH;
+    optionalConfigString(extractedConfig.vaultAgentPath, "vaultAgentPath");
   const vaultAgentPath = path.isAbsolute(vaultAgentPathValue)
     ? vaultAgentPathValue
-    : path.resolve(repoRoot, vaultAgentPathValue);
-  const timeoutSeconds = parseTimeoutSeconds(normalizedConfig.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS);
+    : vaultAgentPathValue
+      ? path.resolve(repoRoot, vaultAgentPathValue)
+      : base.vaultAgentPath;
+  const timeoutSeconds = parseTimeoutSeconds(extractedConfig.timeoutSeconds ?? base.timeoutSeconds);
 
   return {
     repoRoot,
@@ -457,11 +511,11 @@ function createStatusTool(rawConfig) {
   };
 }
 
-function createSearchRedactedTool(rawConfig) {
+function createSearchTool(rawConfig) {
   return {
-    name: TOOL_SEARCH_REDACTED_NAME,
-    label: "Vault Search Redacted",
-    description: TOOL_SEARCH_REDACTED_DESCRIPTION,
+    name: TOOL_SEARCH_NAME,
+    label: "Vault Search",
+    description: TOOL_SEARCH_DESCRIPTION,
     parameters: SEARCH_TOOL_PARAMETERS,
     async execute(_toolCallId, params) {
       const text = await runSearchRedacted(params, rawConfig);
@@ -508,7 +562,8 @@ const plugin = {
       acceptsArgs: true,
       handler: async (ctx) => {
         try {
-          return { text: await handleVaultCommand(ctx?.args, ctx?.config ?? pluginConfig) };
+          const runtimeConfig = resolvePluginConfig(ctx?.config ?? {}, pluginConfig);
+          return { text: await handleVaultCommand(ctx?.args, runtimeConfig) };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return { text: `${message}\n\n${usage()}` };
@@ -517,7 +572,7 @@ const plugin = {
     });
 
     api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME });
-    api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME });
+    api.registerTool(createSearchTool(pluginConfig), { name: TOOL_SEARCH_NAME });
   },
 };
 
@@ -532,16 +587,18 @@ export {
   SAFE_SURFACE,
   SEARCH_TOOL_PARAMETERS,
   STATUS_TOOL_PARAMETERS,
-  TOOL_SEARCH_REDACTED_DESCRIPTION,
-  TOOL_SEARCH_REDACTED_NAME,
+  TOOL_SEARCH_DESCRIPTION,
+  TOOL_SEARCH_NAME,
   TOOL_STATUS_DESCRIPTION,
   TOOL_STATUS_NAME,
   buildVaultAgentInvocation,
   buildSearchRedactedArgs,
-  createSearchRedactedTool,
+  createSearchTool,
   createStatusTool,
+  extractPluginConfigValues,
   formatToolResult,
   handleVaultCommand,
+  hasPluginConfigKeys,
   parseSearchArgs,
   parseSearchFilters,
   runSearchRedacted,

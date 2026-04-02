@@ -190,7 +190,7 @@ Command surface:
 Tool surface:
 
 - `llm_vault_status`
-- `llm_vault_search_redacted`
+- `llm_vault_search`
 
 If the target agent uses a tool allowlist, add:
 
@@ -203,7 +203,7 @@ If the target agent uses a tool allowlist, add:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search_redacted"
+            "llm_vault_search"
           ]
         }
       }
@@ -221,9 +221,9 @@ From OpenClaw, confirm:
 - `/vault status` works
 - `/vault search ...` stays backed by redacted search
 - `llm_vault_status` is available to the agent
-- `llm_vault_search_redacted` is available to the agent
+- `llm_vault_search` is available to the agent
 
-The runtime may attach wrapper metadata such as `meta` around invocation context. The plugin ignores those wrapper keys and still resolves only the documented llm-vault config values.
+The runtime may attach wrapper/context objects such as `meta`, `wizard`, or similar envelopes around invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and still resolves only the documented llm-vault config values.
 
 ## Honest Status
 

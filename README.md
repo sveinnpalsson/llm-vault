@@ -125,9 +125,9 @@ The repo-local plugin package lives at [`plugins/llm-vault-openclaw`](plugins/ll
 OpenClaw has two separate surfaces here:
 
 - command surface: `/vault status`, `/vault search ...`, `/vault search-redacted ...`
-- tool surface: `llm_vault_status`, `llm_vault_search_redacted`
+- tool surface: `llm_vault_status`, `llm_vault_search`
 
-The tool surface is the intended autonomous path. The slash command stays available for manual use.
+The tool surface is the intended autonomous path. `llm_vault_search` remains redacted-only and safe by default for now. The slash command stays available for manual use.
 
 ### `openclaw.json`
 
@@ -173,7 +173,7 @@ No extra agent block is needed if the target agent already has open tool access.
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search_redacted"
+            "llm_vault_search"
           ]
         }
       }
