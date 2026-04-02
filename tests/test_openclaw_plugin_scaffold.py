@@ -270,12 +270,14 @@ console.log(JSON.stringify({{
   }}),
   wrapped: resolvePluginConfig({{
     path: "/plugins/llm-vault-openclaw",
+    apiKey: "runtime-secret",
     config: {{
       repoRoot: {json.dumps(str(repo_root))},
       vaultAgentPath: "./bin/vault-agent",
       timeoutSeconds: 45,
     }},
     wizard: {{
+      apiKey: "wizard-secret",
       meta: {{ runtime: "entry" }},
     }},
   }}),
@@ -283,8 +285,9 @@ console.log(JSON.stringify({{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
+    apiKey: "command-secret",
     meta: {{ runtime: "command" }},
-    wizard: {{ stage: "wrapped" }},
+    wizard: {{ stage: "wrapped", apiKey: "wizard-secret" }},
   }}),
 }}));
 """
@@ -314,7 +317,16 @@ def test_openclaw_plugin_rejects_unknown_or_invalid_config() -> None:
         f"""
 import {{ resolvePluginConfig }} from {json.dumps(PLUGIN_INDEX)};
 const failures = [];
-for (const rawConfig of [{{ unexpected: true }}, {{ timeoutSeconds: 0 }}, {{ repoRoot: 7 }}, {{ config: "bad" }}, "bad"]) {{
+for (const rawConfig of [
+  {{ unexpected: true }},
+  {{ repoRoot: ".", apiKey: "bad" }},
+  {{ config: {{ unexpected: true }} }},
+  {{ config: {{ repoRoot: ".", wizard: {{ enabled: true }} }} }},
+  {{ timeoutSeconds: 0 }},
+  {{ repoRoot: 7 }},
+  {{ config: "bad" }},
+  "bad",
+]) {{
   try {{
     resolvePluginConfig(rawConfig);
   }} catch (error) {{
@@ -329,11 +341,64 @@ console.log(JSON.stringify(failures));
 
     assert payload == [
         "Unsupported plugin config key: unexpected",
+        "Unsupported plugin config key: apiKey",
+        "Unsupported plugin config key: unexpected",
+        "Unsupported plugin config key: wizard",
         "timeoutSeconds must be an integer between 1 and 300.",
         "repoRoot must be a string when provided.",
         "Plugin config wrapper key `config` must be an object when provided.",
         "Plugin config must be an object.",
     ]
+
+
+def test_openclaw_plugin_ignores_wrapper_only_api_key_envelopes(tmp_path: Path) -> None:
+    repo_root = tmp_path / "alt-vault"
+    payload = _run_node_json(
+        f"""
+import {{ resolvePluginConfig }} from {json.dumps(PLUGIN_INDEX)};
+console.log(JSON.stringify({{
+  wrappedRoot: resolvePluginConfig({{
+    path: "/plugins/llm-vault-openclaw",
+    apiKey: "runtime-secret",
+    wizard: {{
+      enabled: true,
+      apiKey: "wizard-secret",
+      meta: {{ runtime: "entry" }},
+    }},
+    config: {{
+      repoRoot: {json.dumps(str(repo_root))},
+      vaultAgentPath: "./bin/vault-agent",
+      timeoutSeconds: 31,
+    }},
+  }}),
+  wrapperOnlyRuntime: resolvePluginConfig(
+    {{
+      apiKey: "runtime-secret",
+      wizard: {{
+        enabled: true,
+        apiKey: "wizard-secret",
+      }},
+      meta: {{ runtime: "command" }},
+    }},
+    resolvePluginConfig({{
+      repoRoot: {json.dumps(str(repo_root))},
+      vaultAgentPath: "./bin/vault-agent",
+      timeoutSeconds: 31,
+    }}),
+  ),
+}}));
+"""
+    )
+    if not payload:
+        return
+
+    expected = {
+        "repoRoot": str(repo_root),
+        "vaultAgentPath": str(repo_root / "bin" / "vault-agent"),
+        "timeoutSeconds": 31,
+    }
+    assert payload["wrappedRoot"] == expected
+    assert payload["wrapperOnlyRuntime"] == expected
 
 
 def test_openclaw_plugin_search_parser_enforces_redacted_backend_and_safe_filters() -> None:
@@ -403,7 +468,9 @@ const result = await handleVaultCommand("status", {{
   repoRoot: {json.dumps(str(tmp_path))},
   vaultAgentPath: {json.dumps(str(fake_agent))},
   timeoutSeconds: 23,
+  apiKey: "runtime-secret",
   meta: {{ runtime: "openclaw" }},
+  wizard: {{ enabled: true, apiKey: "wizard-secret" }},
 }});
 console.log(result);
 """
@@ -439,7 +506,9 @@ plugin.register({{
 const result = await handler({{
   args: "status",
   config: {{
+    apiKey: "runtime-secret",
     wizard: {{
+      apiKey: "wizard-secret",
       meta: {{ runtime: "openclaw" }},
     }},
   }},
