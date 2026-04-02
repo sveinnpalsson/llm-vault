@@ -3,22 +3,17 @@
 This is the straight-line setup path for a local checkout that wants both:
 
 - operator access through `vault-ops`
-- agent-safe access through `vault-agent` and the repo-local OpenClaw plugin scaffold
+- agent-safe access through `vault-agent`
+- OpenClaw command and tool access through the repo-local `llm-vault` plugin
 
-Use this document when the goal is: "check out this repo, set it up locally, then tell me what still needs my secrets/endpoints/config."
-
-## Outcome
-
-At the end of this flow, an OpenClaw system agent should be able to say something close to:
-
-> `llm-vault` is installed from this checkout. `vault-ops` and `vault-agent` are available. The OpenClaw plugin scaffold is wired to the same checkout. You still need to provide your local model endpoints, local content roots, and DB password.
+Use this document when the goal is: install from a checkout, wire OpenClaw to that checkout, and know exactly what still requires operator input.
 
 ## Boundary First
 
-Before setup, distinguish the surfaces:
+Keep the surfaces separate:
 
-- `vault-ops`: operator-only; indexing, repair, upgrade, migration, and unrestricted maintenance remain here
-- `vault-agent`: agent-safe; status plus redacted search
+- `vault-ops`: operator-only; indexing, repair, upgrade, migration, unrestricted maintenance
+- `vault-agent`: agent-safe; status and redacted search
 - `plugins/llm-vault-openclaw`: OpenClaw wrapper around `vault-agent` only
 
 Do not wire OpenClaw directly to `vault-ops`.
@@ -30,18 +25,18 @@ Required:
 - Python 3.11
 - `LLM_VAULT_DB_PASSWORD`
 - at least one local docs root or photos root
-- local embedding endpoint
+- a local embedding endpoint
 
 Recommended:
 
-- local summary endpoint
-- local model-backed redaction endpoint
+- a local summary endpoint
+- a local model-backed redaction endpoint
 - `pdftotext`
 
 Optional:
 
-- local photo-analysis endpoint
-- local PDF parse endpoint
+- a local photo-analysis endpoint
+- a local PDF parse endpoint
 - `inbox-vault` DB path plus `INBOX_VAULT_DB_PASSWORD` for mail
 
 ## Step 1: Install From The Checkout
@@ -62,7 +57,7 @@ vault-ops --help
 vault-agent --help
 ```
 
-Use the installed `vault-ops` and `vault-agent` commands for validation. The repo-root `./vault-ops` and `./vault-agent` wrappers are compatibility shims, not the preferred validation path.
+Use the installed commands for validation. The repo-root wrappers are compatibility shims.
 
 ## Step 2: Create Local Operator Config
 
@@ -98,18 +93,10 @@ top_k = 5
 search_level = "auto"
 ```
 
-Edit the example if you need:
-
-- `photos_roots`
-- `[photo_analysis]`
-- `[pdf]`
-- `[mail_bridge]`
-
 Before moving on:
 
 - add at least one real `docs_roots` or `photos_roots` entry
-- make sure `[summary]`, `[embedding]`, `[redaction]`, and any optional service endpoints point to local services that are actually reachable
-- keep all service URLs local-only
+- point `[summary]`, `[embedding]`, `[redaction]`, and any optional service sections at reachable local-only services
 - keep `state/` present so the first run can create the encrypted DB files there
 
 ## Step 3: Validate The Operator Path
@@ -120,7 +107,7 @@ vault-ops status --json
 vault-ops search "tax receipt" --json
 ```
 
-The first `vault-ops update` initializes the local registry/vector backend state. `--max` means "process at most N docs/photos/mail source items in this run". A bounded first pass is valid, but it can leave status as usable-yet-degraded until later runs finish the remaining corpus.
+The first `vault-ops update` initializes the local registry/vector backend state. `--max` means "process at most N docs/photos/mail source items in this run", so a bounded first pass can leave the system usable-yet-degraded until later runs finish the remaining corpus.
 
 If mail is enabled:
 
@@ -136,25 +123,51 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-After a bounded first pass, `vault-agent status` may already work while still reporting degraded freshness or coverage. That is expected until the remaining sources are ingested.
-
 Expected boundary:
 
 - `vault-agent` does not accept a config override
 - `vault-agent` does not allow a clearance override
-- search is enforced as redacted
+- search remains redacted-only
 
 ## Step 5: Wire The OpenClaw Plugin
 
 The plugin package lives at `plugins/llm-vault-openclaw/`.
 
-Wire it this way:
+OpenClaw uses two separate config locations:
 
-1. Point your OpenClaw plugin loader at that directory, or copy that directory intact into your local OpenClaw plugin folder.
-2. Keep `package.json`, `openclaw.plugin.json`, `index.js`, and the rest of the package contents intact.
-3. Point the plugin back at the checkout that owns `vault-ops.toml` and the installed `vault-agent`.
+- discovery/load path: `plugins.load.paths`
+- plugin runtime config: `plugins.entries.llm-vault.config`
 
-Minimal plugin config payload:
+Minimal `openclaw.json` snippet:
+
+```json
+{
+  "plugins": {
+    "load": {
+      "paths": [
+        "/absolute/path/to/llm-vault/plugins/llm-vault-openclaw"
+      ]
+    },
+    "allow": [
+      "llm-vault"
+    ],
+    "entries": {
+      "llm-vault": {
+        "enabled": true,
+        "config": {
+          "repoRoot": "/absolute/path/to/llm-vault",
+          "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
+          "timeoutSeconds": 120
+        }
+      }
+    }
+  }
+}
+```
+
+If your OpenClaw install already scans a plugin directory, copy `plugins/llm-vault-openclaw/` there intact and omit only the `plugins.load.paths` override.
+
+The inner payload for `plugins.entries.llm-vault.config` is:
 
 ```json
 {
@@ -164,54 +177,54 @@ Minimal plugin config payload:
 }
 ```
 
-Minimal OpenClaw config stub to adapt to the local loader format:
+## Step 6: Allowlist The Tool Surface If Needed
 
-```json
-{
-  "plugins": {
-    "llm-vault": {
-      "path": "/absolute/path/to/llm-vault/plugins/llm-vault-openclaw",
-      "config": {
-        "repoRoot": "/absolute/path/to/llm-vault",
-        "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
-        "timeoutSeconds": 120
-      }
-    }
-  }
-}
-```
+The plugin exposes both a manual command surface and an autonomous tool surface.
 
-The outer OpenClaw config shape may vary by local install. The inner `config` object is the stable contract implemented in this repo.
-
-## Step 6: Validate The Plugin Boundary
-
-From OpenClaw, confirm the plugin only exposes:
+Command surface:
 
 - `/vault status`
 - `/vault search ...`
 - `/vault search-redacted ...`
 
-Both search commands must stay backed by `vault-agent search-redacted`.
+Tool surface:
 
-## What The Repo Already Supports
+- `llm_vault_status`
+- `llm_vault_search_redacted`
 
-This repo already supports:
+If the target agent uses a tool allowlist, add:
 
-- editable install from checkout
-- installable `vault-ops` and `vault-agent` entry points
-- auto-loading `vault-ops.toml`
-- repo-local OpenClaw plugin scaffold metadata/package/config example
-- automated tests for packaging, plugin config contract, and plugin safe boundary
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "my-agent",
+        "tools": {
+          "alsoAllow": [
+            "llm_vault_status",
+            "llm_vault_search_redacted"
+          ]
+        }
+      }
+    ]
+  }
+}
+```
 
-## What Still Requires Human Input
+If the agent already uses `tools.allow`, add those same names there instead.
 
-- choosing real local content roots
-- choosing real local model endpoints
-- providing `LLM_VAULT_DB_PASSWORD`
-- providing `INBOX_VAULT_DB_PASSWORD` if mail is enabled
-- adapting the outer OpenClaw config container to the local OpenClaw build
-- final clean-agent validation
+## Step 7: Validate The Plugin Boundary
+
+From OpenClaw, confirm:
+
+- `/vault status` works
+- `/vault search ...` stays backed by redacted search
+- `llm_vault_status` is available to the agent
+- `llm_vault_search_redacted` is available to the agent
+
+The runtime may attach wrapper metadata such as `meta` around invocation context. The plugin ignores those wrapper keys and still resolves only the documented llm-vault config values.
 
 ## Honest Status
 
-This is still a repo-local plugin scaffold, not a published standalone OpenClaw extension release. Fresh OpenClaw validation remains manual and operator-run. Passing the repo checks does not mean release validation is complete.
+This is a repo-local plugin package, not a published standalone OpenClaw plugin release. Fresh OpenClaw validation remains manual and operator-run. Passing the repo checks does not mean release validation is complete.
