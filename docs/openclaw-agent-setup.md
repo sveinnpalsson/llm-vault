@@ -177,6 +177,8 @@ The inner payload for `plugins.entries.llm-vault.config` is:
 }
 ```
 
+`timeoutSeconds` is enforced by the plugin wrapper around the child process. It is not forwarded into `vault-agent` as a CLI flag.
+
 ## Step 6: Allowlist The Tool Surface If Needed
 
 The plugin exposes both a manual command surface and an autonomous tool surface.

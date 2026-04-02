@@ -112,7 +112,7 @@ const CONFIG_SCHEMA = Object.freeze({
       minimum: 1,
       maximum: MAX_TIMEOUT_SECONDS,
       default: DEFAULT_TIMEOUT_SECONDS,
-      description: "Timeout passed to vault-agent and enforced by the plugin wrapper.",
+      description: "Timeout enforced by the plugin wrapper around vault-agent execution.",
     },
   },
 });
@@ -460,7 +460,7 @@ function buildVaultAgentInvocation(args, rawConfig) {
   const config = resolvePluginConfig(rawConfig);
   return {
     file: config.vaultAgentPath,
-    args: ["--timeout-seconds", String(config.timeoutSeconds), ...args],
+    args: [...args],
     cwd: config.repoRoot,
     timeoutMs: config.timeoutSeconds * 1000 + PROCESS_TIMEOUT_GRACE_MS,
   };
