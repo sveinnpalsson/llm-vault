@@ -10,6 +10,7 @@ PLUGIN_DIR = ROOT / "plugins" / "llm-vault-openclaw"
 PLUGIN_INDEX = str((PLUGIN_DIR / "index.js").resolve().as_posix())
 PLUGIN_README = PLUGIN_DIR / "README.md"
 PLUGIN_CONFIG_EXAMPLE = PLUGIN_DIR / "plugin-config.example.json"
+SETUP_DOC = ROOT / "docs" / "openclaw-agent-setup.md"
 
 
 def _run_node_json(snippet: str) -> dict[str, object] | list[object]:
@@ -93,6 +94,8 @@ def test_openclaw_plugin_docs_are_honest_about_scope() -> None:
     assert "plugin-config.example.json" in content
     assert "copy that directory" in content
     assert "loader reads `package.json`" in content
+    assert "OpenClaw Agent Setup Flow" in content
+    assert '"plugins"' in content
 
 
 def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enablement() -> None:
@@ -104,11 +107,24 @@ def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enab
     assert "vault-agent" in readme
     assert "operator-only" in readme
     assert "manual" in readme.lower()
+    assert '"plugins"' in readme
+    assert "LLM_VAULT_DB_PASSWORD" in readme
     assert example == {
         "repoRoot": "/absolute/path/to/llm-vault",
         "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
         "timeoutSeconds": 120,
     }
+
+
+def test_openclaw_agent_setup_doc_covers_required_inputs_and_plugin_stub() -> None:
+    content = SETUP_DOC.read_text(encoding="utf-8")
+    assert "operator-only" in content
+    assert "vault-agent" in content
+    assert "LLM_VAULT_DB_PASSWORD" in content
+    assert "vault-ops.toml" in content
+    assert "timeoutSeconds" in content
+    assert '"plugins"' in content
+    assert "manual and operator-run" in content
 
 
 def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
