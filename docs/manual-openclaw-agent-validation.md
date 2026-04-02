@@ -88,7 +88,7 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-10. From OpenClaw, verify the plugin exposes `/vault status`, the redacted `/vault search ...` command path, and the autonomous tools `llm_vault_status` and `llm_vault_search_redacted`.
+10. From OpenClaw, verify the plugin exposes `/vault status`, the redacted `/vault search ...` command path, and the autonomous tools `llm_vault_status` and `llm_vault_search`.
 11. Record the exact commands used, whether the installed entry points resolved correctly, whether the plugin found the intended checkout, and any setup friction for follow-up work.
 
 ## Notes

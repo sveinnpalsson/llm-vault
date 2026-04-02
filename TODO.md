@@ -10,6 +10,7 @@
 6. Keep the packaged `vault-ops` and `vault-agent` entry points compatible as the plugin path grows.
 7. Add plugin/install smoke checks that prove a fresh agent can install, configure, discover the plugin, and run redacted search without repo-specific knowledge.
 8. Add a redaction benchmark harness with a pinned evaluation slice, reproducible run command, and reportable metrics.
+9. Planned OpenClaw direction: keep a single `llm_vault_search` tool name and derive the effective search clearance/level from config or policy, potentially per-agent or per-plugin. Until that lands, `llm_vault_search` stays redacted-only and safe by default.
 
 ## Release operations
 

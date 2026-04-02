@@ -102,7 +102,7 @@ def test_openclaw_plugin_docs_are_honest_about_scope() -> None:
     assert "plugins.load.paths" in content
     assert "plugins.entries.llm-vault.config" in content
     assert "llm_vault_status" in content
-    assert "llm_vault_search_redacted" in content
+    assert "llm_vault_search" in content
     assert "plugin-config.example.json" in content
     assert "manual and operator-run" in content
 
@@ -118,7 +118,7 @@ def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enab
     assert "plugins.load.paths" in readme
     assert "plugins.entries.llm-vault.config" in readme
     assert "llm_vault_status" in readme
-    assert "llm_vault_search_redacted" in readme
+    assert "llm_vault_search" in readme
     assert example == {
         "repoRoot": "/absolute/path/to/llm-vault",
         "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
@@ -138,7 +138,7 @@ def test_openclaw_agent_setup_doc_covers_required_inputs_and_plugin_stub() -> No
     assert "usable-yet-degraded" in content
     assert "plugins.load.paths" in content
     assert "plugins.entries.llm-vault.config" in content
-    assert "llm_vault_search_redacted" in content
+    assert "llm_vault_search" in content
     assert "manual and operator-run" in content
 
 
@@ -147,11 +147,11 @@ def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
     assert "SAFE_SURFACE" in content
     assert 'const COMMAND_NAME = "vault"' in content
     assert 'const TOOL_STATUS_NAME = "llm_vault_status"' in content
-    assert 'const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted"' in content
-    assert "PLUGIN_CONFIG_RUNTIME_KEYS" in content
-    assert '"meta"' in content
+    assert 'const TOOL_SEARCH_NAME = "llm_vault_search"' in content
+    assert "extractPluginConfigValues" in content
+    assert '"config"' in content
     assert 'api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME })' in content
-    assert 'api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME })' in content
+    assert 'api.registerTool(createSearchTool(pluginConfig), { name: TOOL_SEARCH_NAME })' in content
     assert 'buildSearchRedactedArgs' in content
     assert "operator-only" in content
 
@@ -219,10 +219,10 @@ console.log(JSON.stringify({{
             "parameterKeys": [],
         },
         {
-            "name": "llm_vault_search_redacted",
+            "name": "llm_vault_search",
             "description": "Run llm-vault redacted search through vault-agent with narrow safe filters.",
-            "label": "Vault Search Redacted",
-            "optionName": "llm_vault_search_redacted",
+            "label": "Vault Search",
+            "optionName": "llm_vault_search",
             "hasExecute": True,
             "required": ["query"],
             "parameterKeys": ["query", "source", "topK", "fromDate", "toDate", "taxonomy", "categoryPrimary"],
@@ -264,7 +264,9 @@ console.log(JSON.stringify({{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
-    meta: {{ runtime: "command" }},
+    wizard: {{
+      meta: {{ runtime: "command" }},
+    }},
   }}),
   wrapped: resolvePluginConfig({{
     path: "/plugins/llm-vault-openclaw",
@@ -273,13 +275,16 @@ console.log(JSON.stringify({{
       vaultAgentPath: "./bin/vault-agent",
       timeoutSeconds: 45,
     }},
-    meta: {{ runtime: "entry" }},
+    wizard: {{
+      meta: {{ runtime: "entry" }},
+    }},
   }}),
   invocation: buildVaultAgentInvocation(["status"], {{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
     meta: {{ runtime: "command" }},
+    wizard: {{ stage: "wrapped" }},
   }}),
 }}));
 """
@@ -412,12 +417,51 @@ console.log(result);
     }
 
 
+def test_openclaw_registered_command_prefers_plugin_config_when_runtime_context_is_wrapper_only(
+    tmp_path: Path,
+) -> None:
+    fake_agent = _write_fake_vault_agent(tmp_path)
+    payload = _run_node_json(
+        f"""
+import plugin from {json.dumps(PLUGIN_INDEX)};
+let handler = null;
+plugin.register({{
+  pluginConfig: {{
+    repoRoot: {json.dumps(str(tmp_path))},
+    vaultAgentPath: {json.dumps(str(fake_agent))},
+    timeoutSeconds: 17,
+  }},
+  registerCommand(command) {{
+    handler = command.handler;
+  }},
+  registerTool() {{}},
+}});
+const result = await handler({{
+  args: "status",
+  config: {{
+    wizard: {{
+      meta: {{ runtime: "openclaw" }},
+    }},
+  }},
+}});
+console.log(JSON.stringify(result));
+"""
+    )
+    if not payload:
+        return
+
+    assert json.loads(payload["text"]) == {
+        "argv": ["--timeout-seconds", "17", "status"],
+        "cwd": str(tmp_path),
+    }
+
+
 def test_openclaw_tool_surface_executes_redacted_backend_only(tmp_path: Path) -> None:
     fake_agent = _write_fake_vault_agent(tmp_path)
     payload = _run_node_json(
         f"""
-import {{ createSearchRedactedTool }} from {json.dumps(PLUGIN_INDEX)};
-const tool = createSearchRedactedTool({{
+import {{ createSearchTool }} from {json.dumps(PLUGIN_INDEX)};
+const tool = createSearchTool({{
   repoRoot: {json.dumps(str(tmp_path))},
   vaultAgentPath: {json.dumps(str(fake_agent))},
   timeoutSeconds: 19,
