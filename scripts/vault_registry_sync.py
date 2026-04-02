@@ -192,6 +192,7 @@ class Config:
     photos_dest_root: Path
     text_cap: int
     max_seconds: float
+    max_items: int
     skip_inbox: bool
     verbose: bool
     summary: SummaryConfig
@@ -210,6 +211,28 @@ class MailBridgeConfig:
     password_env: str = DEFAULT_MAIL_BRIDGE_PASSWORD_ENV
     include_accounts: tuple[str, ...] = ()
     import_summary: bool = True
+
+
+@dataclass
+class WorkBudget:
+    remaining_items: int | None = None
+
+    @classmethod
+    def from_max_items(cls, max_items: int) -> "WorkBudget | None":
+        if int(max_items) <= 0:
+            return None
+        return cls(remaining_items=int(max_items))
+
+    def exhausted(self) -> bool:
+        return self.remaining_items is not None and self.remaining_items <= 0
+
+    def consume(self, count: int = 1) -> bool:
+        if self.remaining_items is None:
+            return True
+        if self.remaining_items <= 0:
+            return False
+        self.remaining_items = max(0, self.remaining_items - max(1, int(count)))
+        return True
 
 
 @dataclass
@@ -316,6 +339,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="time budget in seconds (<=0 means no limit)",
+    )
+    p.add_argument(
+        "--max-items",
+        type=int,
+        default=0,
+        help="process at most N docs/photos/mail source items in this run (<=0 means no limit)",
     )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--skip-inbox", action="store_true", help="skip inbox/scanner routing phase")
@@ -1371,6 +1400,7 @@ def sync_mail_bridge(
     full_scan: bool,
     dry_run: bool,
     deadline: float,
+    budget: WorkBudget | None = None,
     verbose: bool = False,
 ) -> tuple[int, int, int]:
     if not mail_cfg.enabled:
@@ -1381,13 +1411,15 @@ def sync_mail_bridge(
     pruned = 0
     accounts_processed = 0
     live_records: dict[str, set[str]] = {}
+    interrupted = False
 
     inbox_conn = _connect_mail_bridge_db(mail_cfg)
     try:
         accounts = _mail_account_scope(inbox_conn, include_accounts=mail_cfg.include_accounts)
         active_accounts = set(accounts)
         for account_email in accounts:
-            if should_stop(deadline):
+            if should_stop(deadline, budget):
+                interrupted = True
                 break
             cursor = None if full_scan else _mail_sync_cursor(
                 conn,
@@ -1405,11 +1437,12 @@ def sync_mail_bridge(
 
             accounts_processed += 1
             max_cursor = ("", "")
-            for record in records:
-                max_cursor = (record.material_updated_at, record.msg_id)
 
             if dry_run:
                 for record in records:
+                    if should_stop(deadline, budget):
+                        interrupted = True
+                        break
                     dates_json, primary_date = _mail_dates_payload(record.date_iso)
                     checksum = _mail_checksum(record, primary_date=primary_date, dates_json=dates_json)
                     filepath = _mail_source_filepath(record.msg_id)
@@ -1431,12 +1464,20 @@ def sync_mail_bridge(
                         dates_json,
                     )
                     if _mail_registry_snapshot(conn, filepath=filepath) != new_snapshot:
+                        if budget is not None and not budget.consume():
+                            interrupted = True
+                            break
                         updated += 1
+                if interrupted:
+                    break
                 continue
 
             try:
                 conn.execute("BEGIN")
                 for record in records:
+                    if should_stop(deadline, budget):
+                        interrupted = True
+                        break
                     dates_json, primary_date = _mail_dates_payload(record.date_iso)
                     checksum = _mail_checksum(record, primary_date=primary_date, dates_json=dates_json)
                     filepath = _mail_source_filepath(record.msg_id)
@@ -1459,6 +1500,9 @@ def sync_mail_bridge(
                     )
                     if _mail_registry_snapshot(conn, filepath=filepath) == new_snapshot:
                         continue
+                    if budget is not None and not budget.consume():
+                        interrupted = True
+                        break
                     upsert_mail(
                         conn,
                         record=record,
@@ -1467,6 +1511,7 @@ def sync_mail_bridge(
                         dates_json=dates_json,
                     )
                     updated += 1
+                    max_cursor = (record.material_updated_at, record.msg_id)
                 if full_scan:
                     _store_mail_sync_cursor(
                         conn,
@@ -1487,8 +1532,10 @@ def sync_mail_bridge(
             except Exception:
                 conn.rollback()
                 raise
+            if interrupted:
+                break
 
-        if full_scan and not dry_run:
+        if full_scan and not dry_run and not interrupted:
             conn.execute("BEGIN")
             pruned += _prune_mail_registry(
                 conn,
@@ -1704,8 +1751,8 @@ def _extract_photo_dates(
     return date_taken, _serialize_dates(entries), _select_primary_date(entries)
 
 
-def should_stop(deadline: float) -> bool:
-    return time.monotonic() >= deadline
+def should_stop(deadline: float, budget: WorkBudget | None = None) -> bool:
+    return time.monotonic() >= deadline or (budget.exhausted() if budget is not None else False)
 
 
 def log_verbose(cfg: Config, message: str) -> None:
@@ -2877,6 +2924,7 @@ def backfill_missing_summaries(
     chat_client: LocalOpenAIChatClient | None,
     limit: int,
     deadline: float,
+    budget: WorkBudget | None = None,
     verbose: bool = False,
 ) -> tuple[int, int]:
     if limit == 0 or not summary_cfg.enabled or chat_client is None:
@@ -2929,7 +2977,9 @@ def backfill_missing_summaries(
         force=True,
     )
     for idx, (filepath, text_content, _summary_hash, _summary_status) in enumerate(rows, start=1):
-        if should_stop(deadline):
+        if should_stop(deadline, budget):
+            break
+        if budget is not None and not budget.consume():
             break
         text_seed = str(text_content or "")
         summary_hash = _sha256_text(text_seed)
@@ -2983,6 +3033,7 @@ def backfill_missing_photo_analysis(
     limit: int,
     deadline: float,
     verbose: bool,
+    budget: WorkBudget | None = None,
 ) -> tuple[int, int]:
     if limit == 0 or photo_client is None or not photo_client.cfg.enabled:
         return 0, 0
@@ -3044,7 +3095,9 @@ def backfill_missing_photo_analysis(
         force=True,
     )
     for idx, (filepath, source) in enumerate(rows, start=1):
-        if should_stop(deadline):
+        if should_stop(deadline, budget):
+            break
+        if budget is not None and not budget.consume():
             break
         action = "checked"
         try:
@@ -3173,12 +3226,14 @@ def photo_registry_snapshot(conn: sqlite3.Connection, filepath: Path) -> tuple[s
 def run(cfg: Config, dry_run: bool) -> int:
     started = now_iso()
     deadline = float("inf") if cfg.max_seconds <= 0 else (time.monotonic() + cfg.max_seconds)
+    budget = WorkBudget.from_max_items(cfg.max_items)
 
     log_verbose(cfg, "pipeline start")
     log_verbose(
         cfg,
         f"mode={'dry-run' if dry_run else 'live'} "
         f"max_seconds={cfg.max_seconds if cfg.max_seconds > 0 else 'none'} "
+        f"max_items={cfg.max_items if cfg.max_items > 0 else 'none'} "
         f"skip_inbox={cfg.skip_inbox}",
     )
 
@@ -3286,7 +3341,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                 force=True,
             )
             for idx, f in enumerate(inbox_files, start=1):
-                if should_stop(deadline):
+                if should_stop(deadline, budget):
                     break
                 action = "processing"
                 last_progress_mono = emit_sync_progress(
@@ -3313,6 +3368,8 @@ def run(cfg: Config, dry_run: bool) -> int:
                         counters["skipped"] += 1
                         action = "skipped-photo-source-disabled"
                         continue
+                    if budget is not None and not budget.consume():
+                        break
                     routed_path, kind, route_reason = route_inbox_file(
                         f,
                         cfg,
@@ -3391,7 +3448,7 @@ def run(cfg: Config, dry_run: bool) -> int:
             docs_skip_stage_done = 0
             for root, root_files in docs_stage_inputs:
                 for f in root_files:
-                    if should_stop(deadline):
+                    if should_stop(deadline, budget):
                         break
                     docs_done += 1
                     if is_unchanged_source(conn, "docs_registry", f):
@@ -3409,6 +3466,8 @@ def run(cfg: Config, dry_run: bool) -> int:
                         verbose=cfg.verbose,
                         counters=counters,
                     )
+                    if budget is not None and not budget.consume():
+                        break
                     action = "processing"
                     last_progress_mono = emit_sync_progress(
                         stage="2/6.docs-index",
@@ -3456,7 +3515,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                         verbose=cfg.verbose,
                         counters=counters,
                     )
-                if should_stop(deadline):
+                if should_stop(deadline, budget):
                     break
             last_progress_mono, docs_skip_batch, docs_skip_stage_done = flush_sync_skip_batch(
                 batch_count=docs_skip_batch,
@@ -3470,7 +3529,7 @@ def run(cfg: Config, dry_run: bool) -> int:
             )
 
         # 3) Index existing photos roots
-        if not should_stop(deadline):
+        if not should_stop(deadline, budget):
             photos_done = 0
             last_progress_mono = emit_sync_progress(
                 stage="3/6.photos-index",
@@ -3488,7 +3547,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                 photos_skip_stage_done = 0
                 for root, root_files in photos_stage_inputs:
                     for f in root_files:
-                        if should_stop(deadline):
+                        if should_stop(deadline, budget):
                             break
                         photos_done += 1
                         if is_unchanged_source(conn, "photos_registry", f):
@@ -3510,6 +3569,8 @@ def run(cfg: Config, dry_run: bool) -> int:
                             verbose=cfg.verbose,
                             counters=counters,
                         )
+                        if budget is not None and not budget.consume():
+                            break
                         action = "processing"
                         last_progress_mono = emit_sync_progress(
                             stage="3/6.photos-index",
@@ -3550,7 +3611,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                             verbose=cfg.verbose,
                             counters=counters,
                         )
-                    if should_stop(deadline):
+                    if should_stop(deadline, budget):
                         break
                 (
                     last_progress_mono,
@@ -3568,7 +3629,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                 )
 
         # 4) Optional mail bridge sync.
-        if not should_stop(deadline) and "mail" in selected_source_kinds:
+        if not should_stop(deadline, budget) and "mail" in selected_source_kinds:
             try:
                 m_updated, m_pruned, m_accounts = sync_mail_bridge(
                     conn,
@@ -3576,6 +3637,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                     full_scan=bool(cfg.skip_inbox),
                     dry_run=dry_run,
                     deadline=deadline,
+                    budget=budget,
                     verbose=cfg.verbose,
                 )
                 counters["mail_indexed"] += m_updated
@@ -3601,7 +3663,7 @@ def run(cfg: Config, dry_run: bool) -> int:
 
         # 5) Optional controlled summary backfill for unchanged docs.
         if (
-            not should_stop(deadline)
+            not should_stop(deadline, budget)
             and "docs" in selected_source_kinds
             and not dry_run
             and cfg.summary_reprocess_missing_limit != 0
@@ -3612,6 +3674,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                 chat_client=chat_client,
                 limit=cfg.summary_reprocess_missing_limit,
                 deadline=deadline,
+                budget=budget,
                 verbose=cfg.verbose,
             )
             counters["summary_updated"] += backfilled
@@ -3633,7 +3696,7 @@ def run(cfg: Config, dry_run: bool) -> int:
 
         # 6) Optional controlled photo-analysis backfill for unchanged photos.
         if (
-            not should_stop(deadline)
+            not should_stop(deadline, budget)
             and "photos" in selected_source_kinds
             and not dry_run
             and cfg.photo_reprocess_missing_limit != 0
@@ -3643,6 +3706,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                 photo_client=photo_client,
                 limit=cfg.photo_reprocess_missing_limit,
                 deadline=deadline,
+                budget=budget,
                 verbose=cfg.verbose,
             )
             counters["photo_backfill_updated"] += p_updated
@@ -3666,7 +3730,8 @@ def run(cfg: Config, dry_run: bool) -> int:
             conn.commit()
 
         finished = now_iso()
-        status = "timeout" if should_stop(deadline) else "ok"
+        timed_out = time.monotonic() >= deadline
+        status = "timeout" if timed_out else ("bounded" if budget is not None and budget.exhausted() else "ok")
         detail = json.dumps(counters, ensure_ascii=False)
         if not dry_run:
             conn.execute(
@@ -3722,6 +3787,7 @@ def main() -> int:
         photos_dest_root=Path(args.photos_dest_root),
         text_cap=args.text_cap,
         max_seconds=args.max_seconds,
+        max_items=int(args.max_items),
         skip_inbox=bool(args.skip_inbox),
         verbose=bool(args.verbose),
         summary=summary_cfg,

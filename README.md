@@ -36,7 +36,9 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .[dev]
 cp vault-ops.toml.example vault-ops.toml
+mkdir -p state
 export LLM_VAULT_DB_PASSWORD='choose-a-strong-passphrase'
+vault-ops update --max 300
 vault-ops status
 ```
 
@@ -97,17 +99,29 @@ Auto-loaded config paths:
 
 CLI flags override config values. All configured service URLs must stay local-only.
 
+Before the first real run:
+
+- copy or create `vault-ops.toml`
+- add at least one `docs_roots` or `photos_roots` entry
+- point `[summary]`, `[embedding]`, `[redaction]`, and any optional `[photo_analysis]` / `[pdf]` sections at local endpoints you actually run
+- create `state/` if it does not exist yet
+- export `LLM_VAULT_DB_PASSWORD`
+
+The first `vault-ops update` initializes the encrypted registry/vector DB state for this checkout. Until that first update finishes, `vault-ops status` and `vault-agent status` do not have a complete backend state to read.
+
 ## Minimal Local Validation
 
-After editing `vault-ops.toml` and exporting `LLM_VAULT_DB_PASSWORD`:
+After editing `vault-ops.toml`, creating `state/`, and exporting `LLM_VAULT_DB_PASSWORD`:
 
 ```bash
+vault-ops update --max 300
 vault-ops status --json
-vault-ops update --max-seconds 300
 vault-ops search "tax receipt" --json
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
+
+`--max` bounds how many docs/photos/mail source items `vault-ops` will ingest or repair in that run. A first bounded pass can leave `vault-agent status` usable but degraded while the rest of the corpus is still pending.
 
 If mail is enabled, run:
 

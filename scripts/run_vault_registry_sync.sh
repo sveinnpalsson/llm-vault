@@ -34,4 +34,4 @@ run_and_log() {
 
 run_and_log \
   "vault-ops update (summary_model=$VAULT_SUMMARY_MODEL)" \
-  "$VAULT_OPS_CLI" update --max-seconds 600 --verbose
+  "$VAULT_OPS_CLI" update --max 600 --verbose

@@ -122,6 +122,10 @@ def test_openclaw_agent_setup_doc_covers_required_inputs_and_plugin_stub() -> No
     assert "vault-agent" in content
     assert "LLM_VAULT_DB_PASSWORD" in content
     assert "vault-ops.toml" in content
+    assert "mkdir -p state" in content
+    assert "--max 300" in content
+    assert "initializes the local registry/vector backend state" in content
+    assert "usable-yet-degraded" in content
     assert "timeoutSeconds" in content
     assert '"plugins"' in content
     assert "manual and operator-run" in content

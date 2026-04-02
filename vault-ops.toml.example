@@ -1,4 +1,5 @@
 [paths]
+# Set at least one local content root before the first real update run.
 registry_db = "state/vault_registry.db"
 vectors_db = "state/vault_vectors.db"
 docs_roots = []
@@ -46,6 +47,3 @@ max_body_chunks = 12
 [search]
 top_k = 5
 search_level = "auto"
-
-[runtime]
-# max_seconds = 600

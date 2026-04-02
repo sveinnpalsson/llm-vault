@@ -51,6 +51,9 @@ def test_shell_scripts_are_executable() -> None:
 def test_readme_mentions_required_db_password() -> None:
     content = Path("README.md").read_text(encoding="utf-8")
     assert "LLM_VAULT_DB_PASSWORD" in content
+    assert "mkdir -p state" in content
+    assert "--max 300" in content
+    assert "usable but degraded" in content
 
 
 def test_tracked_release_files_do_not_contain_personal_machine_paths() -> None:
