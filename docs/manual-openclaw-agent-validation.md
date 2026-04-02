@@ -31,17 +31,20 @@ vault-agent --help
 
 ```bash
 cp vault-ops.toml.example vault-ops.toml
+mkdir -p state
 export LLM_VAULT_DB_PASSWORD='choose-a-strong-passphrase'
 ```
 
-5. Point `vault-ops.toml` at real local content roots and local-only model services.
+5. Point `vault-ops.toml` at at least one real local docs/photos root and real local-only model/service endpoints.
 6. Run operator-safe checks:
 
 ```bash
+vault-ops update --max 300
 vault-ops status --json
-vault-ops update --max-seconds 300
 vault-ops search "tax receipt" --json
 ```
+
+The first `vault-ops update` initializes the local registry/vector state for that checkout. `--max` means "process at most N docs/photos/mail source items in this run", so a bounded first pass can still leave status/search usable but degraded.
 
 7. Wire the repo-local OpenClaw plugin scaffold from `plugins/llm-vault-openclaw/` into your local OpenClaw plugin path. Copy `plugins/llm-vault-openclaw/plugin-config.example.json` into your local plugin config first, then edit it. If your local setup cannot rely on the default repo wrapper path, configure the plugin with the checkout root and explicit `vault-agent` path:
 

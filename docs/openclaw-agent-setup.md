@@ -68,6 +68,7 @@ Use the installed `vault-ops` and `vault-agent` commands for validation. The rep
 
 ```bash
 cp vault-ops.toml.example vault-ops.toml
+mkdir -p state
 export LLM_VAULT_DB_PASSWORD='choose-a-strong-passphrase'
 ```
 
@@ -104,15 +105,22 @@ Edit the example if you need:
 - `[pdf]`
 - `[mail_bridge]`
 
-All service URLs must stay local-only.
+Before moving on:
+
+- add at least one real `docs_roots` or `photos_roots` entry
+- make sure `[summary]`, `[embedding]`, `[redaction]`, and any optional service endpoints point to local services that are actually reachable
+- keep all service URLs local-only
+- keep `state/` present so the first run can create the encrypted DB files there
 
 ## Step 3: Validate The Operator Path
 
 ```bash
+vault-ops update --max 300
 vault-ops status --json
-vault-ops update --max-seconds 300
 vault-ops search "tax receipt" --json
 ```
+
+The first `vault-ops update` initializes the local registry/vector backend state. `--max` means "process at most N docs/photos/mail source items in this run". A bounded first pass is valid, but it can leave status as usable-yet-degraded until later runs finish the remaining corpus.
 
 If mail is enabled:
 
@@ -127,6 +135,8 @@ vault-ops search "budget approval" --source mail --json
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
+
+After a bounded first pass, `vault-agent status` may already work while still reporting degraded freshness or coverage. That is expected until the remaining sources are ingested.
 
 Expected boundary:
 

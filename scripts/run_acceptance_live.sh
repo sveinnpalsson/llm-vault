@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VAULT_OPS="$ROOT/vault-ops"
 
-MAX_SECONDS="${MAX_SECONDS:-300}"
+MAX_ITEMS="${MAX_ITEMS:-${MAX_SECONDS:-300}}"
 QUERY_TEXT="${QUERY_TEXT:-tax receipt}"
 SUMMARY_BACKFILL="${SUMMARY_BACKFILL:-50}"
 PHOTO_BACKFILL="${PHOTO_BACKFILL:-0}"
@@ -29,15 +29,15 @@ echo "[acceptance] search redacted"
 echo "[acceptance] search full"
 "$VAULT_OPS" search "$QUERY_TEXT" --top-k 5 --clearance full --json
 
-echo "[acceptance] bounded update (max-seconds=$MAX_SECONDS)"
-"$VAULT_OPS" update --max-seconds "$MAX_SECONDS" "${LONGRUN_FLAGS[@]}"
+echo "[acceptance] bounded update (max=$MAX_ITEMS)"
+"$VAULT_OPS" update --max "$MAX_ITEMS" "${LONGRUN_FLAGS[@]}"
 
 echo "[acceptance] bounded repair (summary backfill=$SUMMARY_BACKFILL)"
-"$VAULT_OPS" repair --max-seconds "$MAX_SECONDS" --reprocess-missing-summaries "$SUMMARY_BACKFILL" "${LONGRUN_FLAGS[@]}"
+"$VAULT_OPS" repair --max "$MAX_ITEMS" --reprocess-missing-summaries "$SUMMARY_BACKFILL" "${LONGRUN_FLAGS[@]}"
 
 if [[ "$PHOTO_BACKFILL" != "0" ]]; then
   echo "[acceptance] bounded repair photo backfill (photo backfill=$PHOTO_BACKFILL)"
-  "$VAULT_OPS" repair --max-seconds "$MAX_SECONDS" --reprocess-missing-photo-analysis "$PHOTO_BACKFILL" "${LONGRUN_FLAGS[@]}"
+  "$VAULT_OPS" repair --max "$MAX_ITEMS" --reprocess-missing-photo-analysis "$PHOTO_BACKFILL" "${LONGRUN_FLAGS[@]}"
 fi
 
 echo "[acceptance] status after"

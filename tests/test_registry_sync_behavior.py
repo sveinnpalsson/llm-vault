@@ -10,6 +10,7 @@ from vault_registry_sync import (
     PhotoAnalysisConfig,
     PhotoAnalysisResult,
     SummaryConfig,
+    SummaryResult,
     backfill_missing_photo_analysis,
     count_pending_summary_backfill,
     default_docs_dest_root,
@@ -81,6 +82,7 @@ def _base_cfg(db_path: Path, *, summary_enabled: bool = True) -> Config:
         photos_dest_root=root / "photos",
         text_cap=40000,
         max_seconds=0.0,
+        max_items=0,
         skip_inbox=True,
         verbose=False,
         summary=_summary_cfg(enabled=summary_enabled),
@@ -150,9 +152,10 @@ def test_run_executes_summary_backfill_when_limit_is_negative(
 
     monkeypatch.setattr("vault_registry_sync.LocalOpenAIChatClient", lambda cfg: object())
 
-    def fake_backfill_missing_summaries(conn, *, summary_cfg, chat_client, limit, deadline, verbose=False):
+    def fake_backfill_missing_summaries(conn, *, summary_cfg, chat_client, limit, deadline, budget=None, verbose=False):
         called["count"] += 1
         assert limit == -1
+        assert budget is None
         return (1, 0)
 
     monkeypatch.setattr("vault_registry_sync.backfill_missing_summaries", fake_backfill_missing_summaries)
@@ -163,6 +166,79 @@ def test_run_executes_summary_backfill_when_limit_is_negative(
     reopened = connect_vault_db(db_path)
     try:
         assert count_pending_summary_backfill(reopened, -1) == 1
+    finally:
+        reopened.close()
+
+
+def test_run_marks_bounded_when_max_items_stops_summary_backfill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "state" / "vault_registry.db"
+    conn = connect_vault_db(db_path, ensure_parent=True)
+    try:
+        ensure_db(conn)
+        for name in ("doc-a.txt", "doc-b.txt"):
+            conn.execute(
+                """
+                INSERT INTO docs_registry (
+                  checksum, filepath, source, size, mtime, indexed_at, updated_at,
+                  text_content, text_chars_total, text_capped, parser, ocr_used, extraction_method,
+                  summary_text, summary_model, summary_hash, summary_status, summary_updated_at, summary_error,
+                  dates_json, primary_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    str(tmp_path / name),
+                    "tests/docs",
+                    12,
+                    1000.0,
+                    "2026-03-22T00:00:00+00:00",
+                    "2026-03-22T00:00:00+00:00",
+                    f"body for {name}",
+                    11,
+                    0,
+                    "plain",
+                    0,
+                    "plain",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "[]",
+                    "",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("vault_registry_sync.LocalOpenAIChatClient", lambda cfg: object())
+
+    def fake_summarize_doc_text(_chat_client, _summary_cfg, text_seed, _filepath):
+        return SummaryResult(text=f"summary:{text_seed}", status="ok", error="")
+
+    monkeypatch.setattr("vault_registry_sync.summarize_doc_text", fake_summarize_doc_text)
+
+    cfg = _base_cfg(db_path)
+    cfg.max_items = 1
+    rc = run(cfg, dry_run=False)
+    assert rc == 0
+
+    reopened = connect_vault_db(db_path)
+    try:
+        statuses = reopened.execute(
+            "SELECT summary_status FROM docs_registry ORDER BY filepath"
+        ).fetchall()
+        assert [row[0] for row in statuses].count("ok") == 1
+        last_run = reopened.execute(
+            "SELECT status FROM sync_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert last_run is not None
+        assert last_run[0] == "bounded"
     finally:
         reopened.close()
 

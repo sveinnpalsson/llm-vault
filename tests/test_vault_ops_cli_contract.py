@@ -32,6 +32,14 @@ def test_removed_legacy_source_flags_fail_parse() -> None:
         parser.parse_args(["search", "tax receipt", "--source-table", "docs_registry"])
 
 
+def test_removed_max_seconds_flag_fails_parse() -> None:
+    parser = vault_ops_cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["update", "--max-seconds", "300"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["repair", "--max-seconds", "300"])
+
+
 def test_search_command_defaults_to_redacted_clearance() -> None:
     parser = vault_ops_cli.build_parser()
     args = parser.parse_args(["search", "tax receipt"])
@@ -164,7 +172,7 @@ def test_search_forwards_source_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_update_vector_command_builds_redacted_level(monkeypatch: pytest.MonkeyPatch) -> None:
     args = argparse.Namespace(
-        max_seconds=None,
+        max=None,
         registry_db="/tmp/registry.db",
         vectors_db="/tmp/vectors.db",
         docs_root=[],
@@ -213,9 +221,59 @@ def test_update_vector_command_builds_redacted_level(monkeypatch: pytest.MonkeyP
     assert vector_cmd[vector_cmd.index("--index-level") + 1] == "redacted"
 
 
+def test_update_forwards_max_to_registry_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        max=7,
+        registry_db="/tmp/registry.db",
+        vectors_db="/tmp/vectors.db",
+        docs_root=[],
+        photos_root=[],
+        source="all",
+        disable_summary=False,
+        disable_photo_analysis=False,
+        summary_base_url=None,
+        summary_model=None,
+        summary_api_key=None,
+        summary_timeout=None,
+        photo_analysis_url=None,
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_pdf_service=False,
+        pdf_parse_url=None,
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        dry_run=False,
+        force_vector_update=False,
+        embed_batch_size=None,
+        embed_batch_tokens=None,
+        embed_max_text_chars=None,
+        disable_redaction=False,
+        redaction_mode="hybrid",
+        redaction_profile="standard",
+        redaction_instruction="",
+        redaction_base_url=None,
+        redaction_model=None,
+        redaction_api_key=None,
+        redaction_timeout=None,
+        verbose=False,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, *, label, verbose, dry_run=False):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(vault_ops_cli, "run_cmd", fake_run_cmd)
+    rc = vault_ops_cli.cmd_update(args)
+    assert rc == 0
+    sync_cmd = next(cmd for cmd in calls if str(vault_ops_cli.REGISTRY_SYNC) in cmd)
+    assert "--max-items" in sync_cmd
+    assert sync_cmd[sync_cmd.index("--max-items") + 1] == "7"
+
+
 def test_update_vector_command_forwards_hidden_mail_body_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     args = argparse.Namespace(
-        max_seconds=None,
+        max=None,
         registry_db="/tmp/registry.db",
         vectors_db="/tmp/vectors.db",
         docs_root=[],
@@ -271,7 +329,7 @@ def test_update_vector_command_forwards_hidden_mail_body_cap(monkeypatch: pytest
 
 def test_update_forwards_custom_roots_and_pdf_service(monkeypatch: pytest.MonkeyPatch) -> None:
     args = argparse.Namespace(
-        max_seconds=None,
+        max=None,
         registry_db="/tmp/registry.db",
         vectors_db="/tmp/vectors.db",
         docs_root=["/tmp/docs-a"],
@@ -323,6 +381,66 @@ def test_update_forwards_custom_roots_and_pdf_service(monkeypatch: pytest.Monkey
     assert sync_cmd[sync_cmd.index("--pdf-parse-url") + 1] == DEFAULT_LOCAL_PDF_PARSE_URL
 
 
+def test_repair_limits_registry_sync_and_vectors_to_this_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        max=5,
+        registry_db="/tmp/registry.db",
+        vectors_db="/tmp/vectors.db",
+        docs_root=[],
+        photos_root=[],
+        reprocess_missing_summaries=-1,
+        photos=False,
+        reprocess_missing_photo_analysis=0,
+        source="all",
+        disable_summary=False,
+        disable_photo_analysis=False,
+        embed_base_url=None,
+        embed_model=None,
+        embed_api_key=None,
+        embed_timeout=None,
+        summary_base_url=None,
+        summary_model=None,
+        summary_api_key=None,
+        summary_timeout=None,
+        photo_analysis_url=None,
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_pdf_service=False,
+        pdf_parse_url=None,
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        embed_batch_size=None,
+        embed_batch_tokens=None,
+        embed_max_text_chars=None,
+        disable_redaction=False,
+        redaction_mode="hybrid",
+        redaction_profile="standard",
+        redaction_instruction="",
+        redaction_base_url=None,
+        redaction_model=None,
+        redaction_api_key=None,
+        redaction_timeout=None,
+        no_vectors=False,
+        dry_run=False,
+        force_vector_update=False,
+        verbose=False,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, *, label, verbose, dry_run=False):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(vault_ops_cli, "run_cmd", fake_run_cmd)
+    rc = vault_ops_cli.cmd_repair(args)
+    assert rc == 0
+    sync_cmd = next(cmd for cmd in calls if str(vault_ops_cli.REGISTRY_SYNC) in cmd)
+    vector_cmd = next(cmd for cmd in calls if str(vault_ops_cli.VECTOR_INDEX) in cmd)
+    assert "--max-items" in sync_cmd
+    assert sync_cmd[sync_cmd.index("--max-items") + 1] == "5"
+    assert "--updated-since" in vector_cmd
+
+
 def test_upgrade_dry_run_outputs_plan(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     args = argparse.Namespace(
         registry_db="/tmp/registry.db",
@@ -330,7 +448,7 @@ def test_upgrade_dry_run_outputs_plan(monkeypatch: pytest.MonkeyPatch, capsys) -
         docs_root=[],
         photos_root=[],
         index_level="all",
-        max_seconds=None,
+        max=None,
         reprocess_missing_summaries=-1,
         reprocess_missing_photo_analysis=-1,
         disable_summary=False,
@@ -398,6 +516,9 @@ parse_url = "{DEFAULT_LOCAL_PDF_PARSE_URL}"
 
 [mail_bridge]
 max_body_chunks = 7
+
+[runtime]
+max = 11
 """,
         encoding="utf-8",
     )
@@ -417,6 +538,7 @@ max_body_chunks = 7
     assert args_update.docs_root == ["/tmp/docs-a"]
     assert args_update.photos_root == ["/tmp/photos-a"]
     assert args_update.pdf_parse_url == DEFAULT_LOCAL_PDF_PARSE_URL
+    assert args_update.max == 11
     assert args_update._mail_bridge_max_body_chunks == 7
 
 
@@ -482,7 +604,7 @@ def test_upgrade_final_status_uses_portable_default_inbox_scanner(monkeypatch: p
         photos_root=[],
         source="all",
         index_level="redacted",
-        max_seconds=None,
+        max=None,
         reprocess_missing_summaries=-1,
         reprocess_missing_photo_analysis=-1,
         disable_summary=False,

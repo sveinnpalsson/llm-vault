@@ -221,7 +221,7 @@ def derive_health(
     if last_status in {"error", "failed"} or last_errors > 0:
         return "error"
     if (
-        last_status == "timeout"
+        last_status in {"timeout", "bounded"}
         or summaries_error > 0
         or missing_ratio > 0.25
         or inbox_pending > 25

@@ -371,8 +371,8 @@ def cmd_update_or_repair(args: argparse.Namespace, cfg: UnifiedConfig, *, comman
     if {"docs", "photos"} & sources:
         docs_cmd = [cfg.llm_vault_ops_cmd, command]
         _append_docs_source_flags(docs_cmd, sources)
-        if args.max_seconds is not None and args.max_seconds > 0:
-            docs_cmd += ["--max-seconds", str(args.max_seconds)]
+        if args.max is not None and args.max > 0:
+            docs_cmd += ["--max", str(args.max)]
         run = _run_capture(docs_cmd, cwd=cfg.docs_repo, timeout_seconds=cfg.timeout_seconds)
         out["subsystems"]["llm_vault"] = {
             "rc": run["rc"],
@@ -517,11 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(handler=cmd_status)
 
     p_update = sub.add_parser("update")
-    p_update.add_argument("--max-seconds", type=float, default=None)
+    p_update.add_argument("--max", type=int, default=None)
     p_update.set_defaults(handler=lambda a, c: cmd_update_or_repair(a, c, command="update"))
 
     p_repair = sub.add_parser("repair")
-    p_repair.add_argument("--max-seconds", type=float, default=None)
+    p_repair.add_argument("--max", type=int, default=None)
     p_repair.set_defaults(handler=lambda a, c: cmd_update_or_repair(a, c, command="repair"))
 
     p_search = sub.add_parser("search")

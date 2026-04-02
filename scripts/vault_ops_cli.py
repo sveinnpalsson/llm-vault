@@ -212,12 +212,7 @@ def _apply_config_defaults(args: argparse.Namespace) -> argparse.Namespace:
     max_body_chunks = _config_int(mail, "max_body_chunks")
     setattr(args, "_mail_bridge_max_body_chunks", 12 if max_body_chunks is None else max(0, int(max_body_chunks)))
 
-    max_seconds = runtime.get("max_seconds")
-    if max_seconds is not None and hasattr(args, "max_seconds") and getattr(args, "max_seconds") is None:
-        try:
-            args.max_seconds = float(max_seconds)
-        except (TypeError, ValueError):
-            pass
+    _apply_if_missing(args, "max", _config_int(runtime, "max"))
 
     return args
 
@@ -391,8 +386,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     update_started_at = datetime.now(timezone.utc).isoformat()
     _print_step("update", 1, total_steps, "prepare registry sync")
     sync_cmd = [sys.executable, str(REGISTRY_SYNC), "--db-path", str(registry_db)]
-    if args.max_seconds is not None and args.max_seconds > 0:
-        sync_cmd += ["--max-seconds", str(args.max_seconds)]
+    if args.max is not None and args.max > 0:
+        sync_cmd += ["--max-items", str(args.max)]
     if args.disable_summary:
         sync_cmd.append("--disable-summary")
     if args.disable_photo_analysis:
@@ -436,6 +431,7 @@ def cmd_repair(args: argparse.Namespace) -> int:
     total_steps = 3
     registry_db = _arg_or_default(args, "registry_db", DEFAULT_REGISTRY_DB)
     vectors_db = _arg_or_default(args, "vectors_db", DEFAULT_VECTORS_DB)
+    repair_started_at = datetime.now(timezone.utc).isoformat()
     _print_step("repair", 1, total_steps, "prepare repair sync (skip inbox)")
     sync_cmd = [
         sys.executable,
@@ -444,8 +440,8 @@ def cmd_repair(args: argparse.Namespace) -> int:
         str(registry_db),
         "--skip-inbox",
     ]
-    if args.max_seconds is not None and args.max_seconds > 0:
-        sync_cmd += ["--max-seconds", str(args.max_seconds)]
+    if args.max is not None and args.max > 0:
+        sync_cmd += ["--max-items", str(args.max)]
     if args.reprocess_missing_summaries != 0:
         sync_cmd += [
             "--reprocess-missing-summaries",
@@ -491,6 +487,8 @@ def cmd_repair(args: argparse.Namespace) -> int:
         str(vectors_db),
         "--index-level",
         "redacted",
+        "--updated-since",
+        repair_started_at,
     ]
     _append_common_vector_flags(vector_cmd, args)
     if args.verbose:
@@ -573,6 +571,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     registry_db = _arg_or_default(args, "registry_db", DEFAULT_REGISTRY_DB)
     vectors_db = _arg_or_default(args, "vectors_db", DEFAULT_VECTORS_DB)
     selected_levels = _upgrade_levels_selected(args.index_level)
+    upgrade_started_at = datetime.now(timezone.utc).isoformat()
 
     summary_cmd = [
         sys.executable,
@@ -648,8 +647,8 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         "--reprocess-missing-photo-analysis",
         str(args.reprocess_missing_photo_analysis),
     ]
-    if args.max_seconds is not None and args.max_seconds > 0:
-        repair_cmd += ["--max-seconds", str(args.max_seconds)]
+    if args.max is not None and args.max > 0:
+        repair_cmd += ["--max-items", str(args.max)]
     if args.disable_summary:
         repair_cmd.append("--disable-summary")
     if args.disable_photo_analysis:
@@ -674,6 +673,8 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             str(vectors_db),
             "--index-level",
             level,
+            "--updated-since",
+            upgrade_started_at,
         ]
         _append_common_vector_flags(vector_cmd, args)
         if args.verbose:
@@ -715,7 +716,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_update = sub.add_parser("update", help="sync new inbox items + incremental index update")
     _add_config_arg(p_update, default=argparse.SUPPRESS)
-    p_update.add_argument("--max-seconds", type=float, default=None, help="time budget; default is no limit")
+    p_update.add_argument("--max", type=int, default=None, help="process at most N docs/photos/mail sources in this run")
     p_update.add_argument("--registry-db", default=DEFAULT_REGISTRY_DB)
     p_update.add_argument("--vectors-db", default=DEFAULT_VECTORS_DB)
     p_update.add_argument("--docs-root", action="append", default=[])
@@ -756,7 +757,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_repair = sub.add_parser("repair", help="repair/backfill existing registry and vectors")
     _add_config_arg(p_repair, default=argparse.SUPPRESS)
-    p_repair.add_argument("--max-seconds", type=float, default=None, help="time budget; default is no limit")
+    p_repair.add_argument("--max", type=int, default=None, help="process at most N docs/photos/mail sources in this run")
     p_repair.add_argument("--registry-db", default=DEFAULT_REGISTRY_DB)
     p_repair.add_argument("--vectors-db", default=DEFAULT_VECTORS_DB)
     p_repair.add_argument("--docs-root", action="append", default=[])
@@ -848,7 +849,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_upgrade.add_argument("--photos-root", action="append", default=[])
     p_upgrade.add_argument("--source", choices=source_choices(), default="all", help="select which source kind to index/query")
     p_upgrade.add_argument("--index-level", choices=["redacted", "full", "all"], default="redacted")
-    p_upgrade.add_argument("--max-seconds", type=float, default=None)
+    p_upgrade.add_argument("--max", type=int, default=None)
     p_upgrade.add_argument("--reprocess-missing-summaries", type=int, default=-1)
     p_upgrade.add_argument("--reprocess-missing-photo-analysis", type=int, default=-1)
     p_upgrade.add_argument("--disable-summary", action="store_true")
