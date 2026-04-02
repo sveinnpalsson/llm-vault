@@ -64,6 +64,8 @@ Autonomous use should go through these exact tool names:
 
 Both tools call only `vault-agent`.
 
+`timeoutSeconds` is enforced by the plugin wrapper's child-process timeout. The plugin does not pass timeout flags into `vault-agent`.
+
 Planned direction: keep a single `llm_vault_search` tool name and derive the effective search clearance/level from config or policy, potentially per-agent or per-plugin. That is not implemented yet; today the tool still runs redacted-only and safe by default.
 
 ## Config Placement

@@ -87,6 +87,7 @@ If the agent already uses `tools.allow`, append those same tool names there inst
 ## Notes
 
 - `plugin-config.example.json` contains the exact inner payload for `plugins.entries.llm-vault.config`
+- `timeoutSeconds` is enforced by the plugin wrapper process timeout; it is not forwarded as a `vault-agent` CLI flag
 - the plugin tolerates OpenClaw runtime wrapper/context objects such as `meta`, `wizard`, and similar envelopes, but only reads the documented config keys
 - this package is still repo-local and operator-validated, not a published standalone release
 

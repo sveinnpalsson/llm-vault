@@ -66,7 +66,7 @@ def test_openclaw_plugin_manifest_declares_llm_vault_plugin() -> None:
                     "minimum": 1,
                     "maximum": 300,
                     "default": 120,
-                    "description": "Timeout passed to vault-agent and enforced by the plugin wrapper.",
+                    "description": "Timeout enforced by the plugin wrapper around vault-agent execution.",
                 },
             },
         },
@@ -303,7 +303,7 @@ console.log(JSON.stringify({{
     assert payload["wrapped"] == payload["override"]
     assert payload["invocation"] == {
         "file": str(repo_root / "bin" / "vault-agent"),
-        "args": ["--timeout-seconds", "45", "status"],
+        "args": ["status"],
         "cwd": str(repo_root),
         "timeoutMs": 46_000,
     }
@@ -412,7 +412,7 @@ console.log(result);
         return
 
     assert payload == {
-        "argv": ["--timeout-seconds", "23", "status"],
+        "argv": ["status"],
         "cwd": str(tmp_path),
     }
 
@@ -451,7 +451,7 @@ console.log(JSON.stringify(result));
         return
 
     assert json.loads(payload["text"]) == {
-        "argv": ["--timeout-seconds", "17", "status"],
+        "argv": ["status"],
         "cwd": str(tmp_path),
     }
 
@@ -495,8 +495,6 @@ console.log(JSON.stringify(result));
     assert payload["content"][0]["type"] == "text"
     assert json.loads(payload["content"][0]["text"]) == {
         "argv": [
-            "--timeout-seconds",
-            "19",
             "search-redacted",
             "tax receipt",
             "--source",

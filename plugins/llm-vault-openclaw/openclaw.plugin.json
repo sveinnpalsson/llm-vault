@@ -21,7 +21,7 @@
         "minimum": 1,
         "maximum": 300,
         "default": 120,
-        "description": "Timeout passed to vault-agent and enforced by the plugin wrapper."
+        "description": "Timeout enforced by the plugin wrapper around vault-agent execution."
       }
     }
   }
