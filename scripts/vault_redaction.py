@@ -287,8 +287,11 @@ class PersistentRedactionMap:
             key=lambda item: len(item[1]),
             reverse=True,
         ):
-            pattern = re.compile(re.escape(value), flags=re.I)
-            out = pattern.sub(placeholder, out)
+            exact_pattern = re.compile(re.escape(value), flags=re.I)
+            out = exact_pattern.sub(placeholder, out)
+            whitespace_pattern = _compile_whitespace_tolerant_pattern(value)
+            if whitespace_pattern is not None:
+                out = whitespace_pattern.sub(placeholder, out)
             out = _replace_partial_boundary(out, value, placeholder)
         return out
 
@@ -517,6 +520,23 @@ def _replace_partial_boundary(text: str, value: str, placeholder: str) -> str:
             text = placeholder + text[k:]
             break
     return text
+
+
+def _compile_whitespace_tolerant_pattern(value: str) -> re.Pattern[str] | None:
+    normalized = _normalize_candidate_display(value)
+    if not normalized or len(normalized.split()) < 2:
+        return None
+    if not re.search(r"\s", value):
+        return None
+
+    parts = [part for part in normalized.split(" ") if part]
+    if len(parts) < 2:
+        return None
+
+    body = r"\s+".join(re.escape(part) for part in parts)
+    prefix = r"(?<!\w)" if re.match(r"^\w", parts[0]) else ""
+    suffix = r"(?!\w)" if re.search(r"\w$", parts[-1]) else ""
+    return re.compile(f"{prefix}{body}{suffix}", flags=re.I)
 
 
 def _regex_detect_candidates(text: str) -> list[RedactionCandidate]:

@@ -190,6 +190,36 @@ def test_regex_redaction_uses_persisted_account_placeholder_for_labeled_account(
     assert "<REDACTED_ACCOUNT>:" not in redacted
 
 
+def test_persisted_person_redaction_matches_newline_variant() -> None:
+    table = PersistentRedactionMap.from_rows(
+        [("PERSON", "<REDACTED_PERSON_A>", "sveinn palsson", "Sveinn Palsson")]
+    )
+    text = "Signer: Sveinn\nPalsson"
+    run = redact_chunks_with_persistent_map(
+        [text],
+        mode="regex",
+        table=table,
+        cfg=RedactionConfig(mode="regex", enabled=True),
+    )
+    assert run.chunk_text_redacted[0] == "Signer: <REDACTED_PERSON_A>"
+    assert not run.inserted_entries
+
+
+def test_persisted_person_redaction_matches_multi_space_variant() -> None:
+    table = PersistentRedactionMap.from_rows(
+        [("PERSON", "<REDACTED_PERSON_A>", "sveinn palsson", "Sveinn Palsson")]
+    )
+    text = "Signer: Sveinn   Palsson"
+    run = redact_chunks_with_persistent_map(
+        [text],
+        mode="regex",
+        table=table,
+        cfg=RedactionConfig(mode="regex", enabled=True),
+    )
+    assert run.chunk_text_redacted[0] == "Signer: <REDACTED_PERSON_A>"
+    assert not run.inserted_entries
+
+
 def test_prune_invalid_redaction_entries_removes_false_positives(tmp_path: Path) -> None:
     db_path = tmp_path / "state" / "vault_registry.db"
     conn = connect_vault_db(db_path, ensure_parent=True)
