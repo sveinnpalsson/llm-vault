@@ -96,7 +96,9 @@ search_level = "auto"
 Before moving on:
 
 - add at least one real `docs_roots` or `photos_roots` entry
-- point `[summary]`, `[embedding]`, `[redaction]`, and any optional service sections at reachable local-only services
+- point `[summary]`, `[embedding]`, and `[redaction]` at reachable local-only services
+- for optional `[photo_analysis]` / `[pdf]`: either set reachable local endpoints or set `disable_service = true` in those sections
+- if you copy `vault-ops.toml.example`, it already includes localhost placeholder endpoints for photo/PDF; keep them only when those local services are actually running
 - keep `state/` present so the first run can create the encrypted DB files there
 
 ## Step 3: Validate The Operator Path

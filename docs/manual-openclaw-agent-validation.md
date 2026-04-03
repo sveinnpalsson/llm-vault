@@ -35,7 +35,7 @@ mkdir -p state
 export LLM_VAULT_DB_PASSWORD='choose-a-strong-passphrase'
 ```
 
-5. Point `vault-ops.toml` at at least one real local docs/photos root and real local-only model/service endpoints.
+5. Point `vault-ops.toml` at at least one real local docs/photos root and real local-only model/service endpoints. For optional `[photo_analysis]` / `[pdf]`, either keep reachable local endpoints or set `disable_service = true` for each.
 6. Run operator-safe checks:
 
 ```bash
