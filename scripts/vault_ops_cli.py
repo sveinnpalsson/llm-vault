@@ -194,6 +194,7 @@ def _apply_config_defaults(args: argparse.Namespace) -> argparse.Namespace:
     _apply_if_missing(args, "photo_analysis_url", _config_str(photo, "url"))
     _apply_if_missing(args, "photo_analysis_timeout", _config_int(photo, "timeout"))
     _apply_if_false(args, "photo_analysis_force", _config_bool(photo, "force"))
+    _apply_if_false(args, "disable_photo_analysis", _config_bool(photo, "disable_service"))
 
     _apply_if_missing(args, "pdf_parse_url", _config_str(pdf, "parse_url"))
     _apply_if_missing(args, "pdf_parse_timeout", _config_int(pdf, "timeout"))

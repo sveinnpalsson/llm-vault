@@ -24,13 +24,16 @@ model = "qwen3-14b"
 # timeout = 45
 
 [photo_analysis]
-# Optional companion service. Set this to your local analyzer endpoint when enabled.
+# Optional companion service.
+# Disabled unless URL is set here or VAULT_PHOTO_ANALYSIS_URL is exported.
 # url = "http://127.0.0.1:<photo-analyzer-port>/analyze"
 # timeout = 45
 # force = false
+# disable_service = false
 
 [pdf]
-# Optional companion service. Set this to your local PDF parser when enabled.
+# Optional companion service.
+# Disabled unless parse_url is set here or VAULT_PDF_PARSE_URL is exported.
 # parse_url = "http://127.0.0.1:<pdf-parser-port>/v1/pdf/parse"
 # timeout = 600
 # profile = "auto"
