@@ -880,7 +880,7 @@ def main() -> int:
         print(f"- Health: {data['health']}")
         print(f"- Warnings: {data['warning_count']}")
         if warnings:
-            print("- Warning details:")
+            print("- WARNING DETAILS (action recommended):")
             for warning in warnings:
                 category = str(warning.get("category") or "warning")
                 message = str(warning.get("message") or "")

@@ -60,8 +60,8 @@ Usually required for a useful setup:
 
 Optional:
 
-- a local photo-analysis service (enabled only when URL is explicitly configured)
-- a local PDF parse service for scanned PDFs (enabled only when URL is explicitly configured)
+- a local photo-analysis service (default config points to `127.0.0.1:18110`; explicit disable supported)
+- a local PDF parse service for scanned PDFs (default config points to `127.0.0.1:18084`; explicit disable supported)
 - a read-only `inbox-vault` bridge for mail
 
 ## Minimal `vault-ops.toml`
@@ -87,6 +87,14 @@ model = "Qwen3-Embedding-8B"
 base_url = "http://127.0.0.1:8080/v1"
 model = "qwen3-14b"
 
+[photo_analysis]
+url = "http://127.0.0.1:18110/analyze"
+# disable_service = true
+
+[pdf]
+parse_url = "http://127.0.0.1:18084/v1/pdf/parse"
+# disable_service = true
+
 [search]
 top_k = 5
 search_level = "auto"
@@ -95,8 +103,8 @@ search_level = "auto"
 Before the first real run:
 
 - add at least one `docs_roots` or `photos_roots` entry
-- point `[summary]`, `[embedding]`, `[redaction]`, and any optional `[photo_analysis]` / `[pdf]` sections at reachable local endpoints
-- note: `[photo_analysis]` and `[pdf]` are disabled by default when URL fields are absent/commented-out; set `url` / `parse_url` (or `VAULT_PHOTO_ANALYSIS_URL` / `VAULT_PDF_PARSE_URL`) to enable
+- point `[summary]`, `[embedding]`, `[redaction]`, `[photo_analysis]`, and `[pdf]` at reachable local endpoints (or explicitly disable optional services)
+- note: default template includes localhost placeholder endpoints for `[photo_analysis].url` and `[pdf].parse_url`; use `disable_service = true` under each section to explicitly disable
 - create `state/` if it does not exist yet
 - export `LLM_VAULT_DB_PASSWORD`
 - run `vault-ops status` and fix any wiring warnings before long ingest runs
