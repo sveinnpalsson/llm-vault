@@ -148,8 +148,8 @@ def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
     assert 'const COMMAND_NAME = "vault"' in content
     assert 'const TOOL_STATUS_NAME = "llm_vault_status"' in content
     assert 'const TOOL_SEARCH_NAME = "llm_vault_search"' in content
-    assert "extractPluginConfigValues" in content
-    assert '"config"' in content
+    assert "resolvePluginConfig(api.pluginConfig)" in content
+    assert "ctx?.config" not in content
     assert 'api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME })' in content
     assert 'api.registerTool(createSearchTool(pluginConfig), { name: TOOL_SEARCH_NAME })' in content
     assert 'buildSearchRedactedArgs' in content
@@ -253,7 +253,7 @@ console.log(JSON.stringify({{
     assert payload["pluginConfigSchema"] == manifest["configSchema"] == payload["exportedConfigSchema"]
 
 
-def test_openclaw_plugin_config_defaults_overrides_and_runtime_wrappers_are_stable(tmp_path: Path) -> None:
+def test_openclaw_plugin_config_defaults_and_overrides_are_stable(tmp_path: Path) -> None:
     repo_root = tmp_path / "alt-vault"
     payload = _run_node_json(
         f"""
@@ -264,30 +264,11 @@ console.log(JSON.stringify({{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
-    wizard: {{
-      meta: {{ runtime: "command" }},
-    }},
-  }}),
-  wrapped: resolvePluginConfig({{
-    path: "/plugins/llm-vault-openclaw",
-    apiKey: "runtime-secret",
-    config: {{
-      repoRoot: {json.dumps(str(repo_root))},
-      vaultAgentPath: "./bin/vault-agent",
-      timeoutSeconds: 45,
-    }},
-    wizard: {{
-      apiKey: "wizard-secret",
-      meta: {{ runtime: "entry" }},
-    }},
   }}),
   invocation: buildVaultAgentInvocation(["status"], {{
     repoRoot: {json.dumps(str(repo_root))},
     vaultAgentPath: "./bin/vault-agent",
     timeoutSeconds: 45,
-    apiKey: "command-secret",
-    meta: {{ runtime: "command" }},
-    wizard: {{ stage: "wrapped", apiKey: "wizard-secret" }},
   }}),
 }}));
 """
@@ -303,7 +284,6 @@ console.log(JSON.stringify({{
         "vaultAgentPath": str(repo_root / "bin" / "vault-agent"),
         "timeoutSeconds": 45,
     }
-    assert payload["wrapped"] == payload["override"]
     assert payload["invocation"] == {
         "file": str(repo_root / "bin" / "vault-agent"),
         "args": ["status"],
@@ -320,11 +300,14 @@ const failures = [];
 for (const rawConfig of [
   {{ unexpected: true }},
   {{ repoRoot: ".", apiKey: "bad" }},
-  {{ config: {{ unexpected: true }} }},
-  {{ config: {{ repoRoot: ".", wizard: {{ enabled: true }} }} }},
+  {{
+    meta: {{ runtime: "openclaw" }},
+    wizard: {{ enabled: true }},
+    apiKey: "runtime-secret",
+    defaultProvider: "local",
+  }},
   {{ timeoutSeconds: 0 }},
   {{ repoRoot: 7 }},
-  {{ config: "bad" }},
   "bad",
 ]) {{
   try {{
@@ -342,48 +325,27 @@ console.log(JSON.stringify(failures));
     assert payload == [
         "Unsupported plugin config key: unexpected",
         "Unsupported plugin config key: apiKey",
-        "Unsupported plugin config key: unexpected",
-        "Unsupported plugin config key: wizard",
+        "Unsupported plugin config key: meta",
         "timeoutSeconds must be an integer between 1 and 300.",
         "repoRoot must be a string when provided.",
-        "Plugin config wrapper key `config` must be an object when provided.",
         "Plugin config must be an object.",
     ]
 
 
-def test_openclaw_plugin_ignores_wrapper_only_api_key_envelopes(tmp_path: Path) -> None:
+def test_openclaw_plugin_uses_base_config_only_for_explicit_plugin_config_overrides(tmp_path: Path) -> None:
     repo_root = tmp_path / "alt-vault"
     payload = _run_node_json(
         f"""
 import {{ resolvePluginConfig }} from {json.dumps(PLUGIN_INDEX)};
 console.log(JSON.stringify({{
-  wrappedRoot: resolvePluginConfig({{
-    path: "/plugins/llm-vault-openclaw",
-    apiKey: "runtime-secret",
-    wizard: {{
-      enabled: true,
-      apiKey: "wizard-secret",
-      meta: {{ runtime: "entry" }},
-    }},
-    config: {{
-      repoRoot: {json.dumps(str(repo_root))},
-      vaultAgentPath: "./bin/vault-agent",
-      timeoutSeconds: 31,
-    }},
-  }}),
-  wrapperOnlyRuntime: resolvePluginConfig(
+  timeoutOnlyOverride: resolvePluginConfig(
     {{
-      apiKey: "runtime-secret",
-      wizard: {{
-        enabled: true,
-        apiKey: "wizard-secret",
-      }},
-      meta: {{ runtime: "command" }},
+      timeoutSeconds: 31,
     }},
     resolvePluginConfig({{
       repoRoot: {json.dumps(str(repo_root))},
       vaultAgentPath: "./bin/vault-agent",
-      timeoutSeconds: 31,
+      timeoutSeconds: 17,
     }}),
   ),
 }}));
@@ -397,8 +359,7 @@ console.log(JSON.stringify({{
         "vaultAgentPath": str(repo_root / "bin" / "vault-agent"),
         "timeoutSeconds": 31,
     }
-    assert payload["wrappedRoot"] == expected
-    assert payload["wrapperOnlyRuntime"] == expected
+    assert payload["timeoutOnlyOverride"] == expected
 
 
 def test_openclaw_plugin_search_parser_enforces_redacted_backend_and_safe_filters() -> None:
@@ -459,7 +420,7 @@ console.log(JSON.stringify({{
     assert payload["built"] == payload["parsed"]
 
 
-def test_openclaw_command_runtime_handles_meta_wrapper_context(tmp_path: Path) -> None:
+def test_openclaw_command_runtime_uses_explicit_plugin_config_payload(tmp_path: Path) -> None:
     fake_agent = _write_fake_vault_agent(tmp_path)
     payload = _run_node_json(
         f"""
@@ -468,9 +429,6 @@ const result = await handleVaultCommand("status", {{
   repoRoot: {json.dumps(str(tmp_path))},
   vaultAgentPath: {json.dumps(str(fake_agent))},
   timeoutSeconds: 23,
-  apiKey: "runtime-secret",
-  meta: {{ runtime: "openclaw" }},
-  wizard: {{ enabled: true, apiKey: "wizard-secret" }},
 }});
 console.log(result);
 """
@@ -484,7 +442,7 @@ console.log(result);
     }
 
 
-def test_openclaw_registered_command_prefers_plugin_config_when_runtime_context_is_wrapper_only(
+def test_openclaw_registered_command_ignores_full_openclaw_config_snapshot(
     tmp_path: Path,
 ) -> None:
     fake_agent = _write_fake_vault_agent(tmp_path)
@@ -506,7 +464,21 @@ plugin.register({{
 const result = await handler({{
   args: "status",
   config: {{
+    meta: {{ runtime: "openclaw" }},
     apiKey: "runtime-secret",
+    defaultProvider: "local",
+    plugins: {{
+      entries: {{
+        "llm-vault": {{
+          enabled: true,
+          config: {{
+            repoRoot: "/wrong/root",
+            vaultAgentPath: "/wrong/root/vault-agent",
+            timeoutSeconds: 999,
+          }},
+        }},
+      }},
+    }},
     wizard: {{
       apiKey: "wizard-secret",
       meta: {{ runtime: "openclaw" }},

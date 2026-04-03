@@ -225,7 +225,12 @@ From OpenClaw, confirm:
 - `llm_vault_status` is available to the agent
 - `llm_vault_search` is available to the agent
 
-The runtime may attach wrapper/context objects such as `meta`, `wizard`, `apiKey`, or similar envelopes around invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and still resolves only the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
+Config contract:
+
+- the plugin-specific payload lives under `plugins.entries.llm-vault.config`
+- OpenClaw passes that payload to the plugin as `api.pluginConfig` during registration
+- command `ctx.config` is the full OpenClaw config snapshot, not the llm-vault plugin config payload
+- `/vault` command execution uses the registered plugin config, so unrelated top-level OpenClaw keys such as `meta`, `wizard`, `apiKey`, or `defaultProvider` are ignored rather than parsed as plugin config
 
 ## Honest Status
 
