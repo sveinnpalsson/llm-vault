@@ -73,15 +73,25 @@ def test_status_json_uses_json_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called["json_runner"] is True
 
 
-def test_status_forwards_hidden_mail_body_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_forwards_warning_related_config_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     args = argparse.Namespace(
         json=True,
         verbose=False,
         registry_db="/tmp/registry.db",
         vectors_db="/tmp/vectors.db",
         inbox_scanner="/tmp/scanner",
+        docs_root=["/tmp/docs-a"],
+        photos_root=["/tmp/photos-a"],
+        summary_base_url="http://127.0.0.1:8080/v1",
+        embed_base_url="http://127.0.0.1:8080/v1",
+        redaction_base_url="http://127.0.0.1:8080/v1",
+        disable_photo_analysis=False,
+        photo_analysis_url="http://127.0.0.1:18110/analyze",
+        disable_pdf_service=False,
+        pdf_parse_url="http://127.0.0.1:18084/v1/pdf/parse",
         _mail_bridge_enabled=True,
         _mail_bridge_db_path="/tmp/inbox.db",
+        _mail_bridge_password_env="INBOX_VAULT_DB_PASSWORD",
         _mail_bridge_include_accounts=[],
         _mail_bridge_import_summary=True,
         _mail_bridge_max_body_chunks=7,
@@ -96,6 +106,14 @@ def test_status_forwards_hidden_mail_body_cap(monkeypatch: pytest.MonkeyPatch) -
     rc = vault_ops_cli.cmd_status(args)
     assert rc == 0
     status_cmd = calls[0]
+    assert "--docs-root" in status_cmd
+    assert status_cmd[status_cmd.index("--docs-root") + 1] == "/tmp/docs-a"
+    assert "--photos-root" in status_cmd
+    assert status_cmd[status_cmd.index("--photos-root") + 1] == "/tmp/photos-a"
+    assert "--photo-analysis-url" in status_cmd
+    assert "--pdf-parse-url" in status_cmd
+    assert "--mail-bridge-password-env" in status_cmd
+    assert status_cmd[status_cmd.index("--mail-bridge-password-env") + 1] == "INBOX_VAULT_DB_PASSWORD"
     assert "--mail-max-body-chunks" in status_cmd
     assert status_cmd[status_cmd.index("--mail-max-body-chunks") + 1] == "7"
 

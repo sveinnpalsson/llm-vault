@@ -549,10 +549,30 @@ def cmd_status(args: argparse.Namespace) -> int:
         "--inbox-scanner",
         str(args.inbox_scanner),
     ]
+    for root in list(getattr(args, "docs_root", []) or []):
+        summary_cmd += ["--docs-root", str(root)]
+    for root in list(getattr(args, "photos_root", []) or []):
+        summary_cmd += ["--photos-root", str(root)]
+    if getattr(args, "summary_base_url", None):
+        summary_cmd += ["--summary-base-url", str(args.summary_base_url)]
+    if getattr(args, "embed_base_url", None):
+        summary_cmd += ["--embed-base-url", str(args.embed_base_url)]
+    if getattr(args, "redaction_base_url", None):
+        summary_cmd += ["--redaction-base-url", str(args.redaction_base_url)]
+    if getattr(args, "disable_photo_analysis", False):
+        summary_cmd.append("--disable-photo-analysis")
+    if getattr(args, "photo_analysis_url", None):
+        summary_cmd += ["--photo-analysis-url", str(args.photo_analysis_url)]
+    if getattr(args, "disable_pdf_service", False):
+        summary_cmd.append("--disable-pdf-service")
+    if getattr(args, "pdf_parse_url", None):
+        summary_cmd += ["--pdf-parse-url", str(args.pdf_parse_url)]
     if getattr(args, "_mail_bridge_enabled", False):
         summary_cmd.append("--mail-bridge-enabled")
     if getattr(args, "_mail_bridge_db_path", None):
         summary_cmd += ["--mail-bridge-db-path", str(args._mail_bridge_db_path)]
+    if getattr(args, "_mail_bridge_password_env", None):
+        summary_cmd += ["--mail-bridge-password-env", str(args._mail_bridge_password_env)]
     for account in list(getattr(args, "_mail_bridge_include_accounts", []) or []):
         summary_cmd += ["--mail-bridge-include-account", str(account)]
     if getattr(args, "_mail_bridge_import_summary", True) is False:
@@ -839,6 +859,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--registry-db", default=DEFAULT_REGISTRY_DB)
     p_status.add_argument("--vectors-db", default=DEFAULT_VECTORS_DB)
     p_status.add_argument("--inbox-scanner", default=DEFAULT_INBOX_SCANNER)
+    p_status.add_argument("--docs-root", action="append", default=[], help=argparse.SUPPRESS)
+    p_status.add_argument("--photos-root", action="append", default=[], help=argparse.SUPPRESS)
+    p_status.add_argument("--summary-base-url", default=None, help=argparse.SUPPRESS)
+    p_status.add_argument("--embed-base-url", default=None, help=argparse.SUPPRESS)
+    p_status.add_argument("--redaction-base-url", default=None, help=argparse.SUPPRESS)
+    p_status.add_argument("--disable-photo-analysis", action="store_true", help=argparse.SUPPRESS)
+    p_status.add_argument("--photo-analysis-url", default=None, help=argparse.SUPPRESS)
+    p_status.add_argument("--disable-pdf-service", action="store_true", help=argparse.SUPPRESS)
+    p_status.add_argument("--pdf-parse-url", default=None, help=argparse.SUPPRESS)
     p_status.add_argument("--verbose", action="store_true", help="print command execution details")
     p_status.set_defaults(func=cmd_status)
 
