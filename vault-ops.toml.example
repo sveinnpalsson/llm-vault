@@ -25,18 +25,18 @@ model = "qwen3-14b"
 
 [photo_analysis]
 # Optional companion service.
-# Disabled unless URL is set here or VAULT_PHOTO_ANALYSIS_URL is exported.
-# `vault-ops status` warns when unset, non-local, or unreachable.
-# url = "http://127.0.0.1:<photo-analyzer-port>/analyze"
+# Enabled by default with a local placeholder endpoint; set disable_service = true to opt out.
+# `vault-ops status` warns when non-local or unreachable.
+url = "http://127.0.0.1:18110/analyze"
 # timeout = 45
 # force = false
 # disable_service = false
 
 [pdf]
 # Optional companion service.
-# Disabled unless parse_url is set here or VAULT_PDF_PARSE_URL is exported.
-# `vault-ops status` warns when unset, non-local, or unreachable.
-# parse_url = "http://127.0.0.1:<pdf-parser-port>/v1/pdf/parse"
+# Enabled by default with a local placeholder endpoint; set disable_service = true to opt out.
+# `vault-ops status` warns when non-local or unreachable.
+parse_url = "http://127.0.0.1:18084/v1/pdf/parse"
 # timeout = 600
 # profile = "auto"
 # disable_service = false

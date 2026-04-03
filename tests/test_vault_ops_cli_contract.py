@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 import vault_ops_cli
-from vault_service_defaults import DEFAULT_LOCAL_MODEL_BASE_URL, DEFAULT_LOCAL_PDF_PARSE_URL
+from vault_service_defaults import (
+    DEFAULT_LOCAL_MODEL_BASE_URL,
+    DEFAULT_LOCAL_PDF_PARSE_URL,
+    DEFAULT_LOCAL_PHOTO_ANALYSIS_URL,
+)
 
 
 def test_update_default_source_mode_is_all() -> None:
@@ -116,6 +120,51 @@ def test_status_forwards_warning_related_config_flags(monkeypatch: pytest.Monkey
     assert status_cmd[status_cmd.index("--mail-bridge-password-env") + 1] == "INBOX_VAULT_DB_PASSWORD"
     assert "--mail-max-body-chunks" in status_cmd
     assert status_cmd[status_cmd.index("--mail-max-body-chunks") + 1] == "7"
+
+
+def test_status_defaults_to_verbose_multiline_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        json=False,
+        oneline=False,
+        verbose=False,
+        registry_db="/tmp/registry.db",
+        vectors_db="/tmp/vectors.db",
+        inbox_scanner="/tmp/scanner",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, *, label, verbose, dry_run=False):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(vault_ops_cli, "run_cmd", fake_run_cmd)
+    rc = vault_ops_cli.cmd_status(args)
+    assert rc == 0
+    status_cmd = calls[0]
+    assert "--json" not in status_cmd
+    assert "--oneline" not in status_cmd
+
+
+def test_status_can_explicitly_request_oneline(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        json=False,
+        oneline=True,
+        verbose=False,
+        registry_db="/tmp/registry.db",
+        vectors_db="/tmp/vectors.db",
+        inbox_scanner="/tmp/scanner",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, *, label, verbose, dry_run=False):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(vault_ops_cli, "run_cmd", fake_run_cmd)
+    rc = vault_ops_cli.cmd_status(args)
+    assert rc == 0
+    status_cmd = calls[0]
+    assert "--oneline" in status_cmd
 
 
 def test_search_json_uses_json_runner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -529,6 +578,9 @@ model = "Qwen3-Embedding-8B"
 base_url = "{DEFAULT_LOCAL_MODEL_BASE_URL}"
 model = "qwen3-14b"
 
+[photo_analysis]
+url = "{DEFAULT_LOCAL_PHOTO_ANALYSIS_URL}"
+
 [pdf]
 parse_url = "{DEFAULT_LOCAL_PDF_PARSE_URL}"
 
@@ -555,6 +607,7 @@ max = 11
     args_update = vault_ops_cli._apply_config_defaults(args_update)
     assert args_update.docs_root == ["/tmp/docs-a"]
     assert args_update.photos_root == ["/tmp/photos-a"]
+    assert args_update.photo_analysis_url == DEFAULT_LOCAL_PHOTO_ANALYSIS_URL
     assert args_update.pdf_parse_url == DEFAULT_LOCAL_PDF_PARSE_URL
     assert args_update.max == 11
     assert args_update._mail_bridge_max_body_chunks == 7

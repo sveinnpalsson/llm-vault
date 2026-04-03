@@ -581,7 +581,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         summary_cmd += ["--mail-max-body-chunks", str(max(0, int(args._mail_bridge_max_body_chunks)))]
     if args.json:
         summary_cmd.append("--json")
-    else:
+    elif bool(getattr(args, "oneline", False)):
         summary_cmd.append("--oneline")
     if args.json:
         return run_cmd_json(summary_cmd, label="status", verbose=args.verbose)
@@ -856,6 +856,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="show vault operational status")
     _add_config_arg(p_status, default=argparse.SUPPRESS)
     p_status.add_argument("--json", action="store_true", help="emit JSON instead of one-line")
+    p_status.add_argument("--oneline", action="store_true", help="emit compact one-line status")
     p_status.add_argument("--registry-db", default=DEFAULT_REGISTRY_DB)
     p_status.add_argument("--vectors-db", default=DEFAULT_VECTORS_DB)
     p_status.add_argument("--inbox-scanner", default=DEFAULT_INBOX_SCANNER)
