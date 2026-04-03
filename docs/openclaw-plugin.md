@@ -116,11 +116,11 @@ The inner config payload is:
 
 `plugin-config.example.json` matches that payload exactly.
 
-## Runtime Compatibility
+OpenClaw passes that payload to the plugin as `api.pluginConfig` during registration. The plugin resolves and validates config there.
 
-Real OpenClaw runtime contexts may attach wrapper/context objects such as `meta`, `wizard`, `apiKey`, or similar envelopes around command/tool invocation context. The plugin unwraps those containers, ignores wrapper-only keys, and only consumes the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` values.
+For command execution, `ctx.config` is the current full OpenClaw config snapshot, not the llm-vault plugin config payload. The plugin does not parse command-time `ctx.config` as llm-vault config, so unrelated top-level OpenClaw keys such as `meta`, `wizard`, `apiKey`, or `defaultProvider` are ignored on the `/vault` path instead of being revalidated as plugin config.
 
-That compatibility does not widen the backend boundary: unsupported keys still fail closed inside the llm-vault config payload that actually defines `repoRoot`, `vaultAgentPath`, or `timeoutSeconds`, and wrapper metadata is never forwarded to `vault-agent`.
+Strict validation still applies to the actual llm-vault plugin config payload under `plugins.entries.llm-vault.config`: only `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` are accepted, and wrapper metadata is never forwarded to `vault-agent`.
 
 ## Agent Allowlist
 
@@ -150,7 +150,7 @@ If the agent already uses `tools.allow`, add those same tool names there instead
 
 ## Validation Status
 
-- plugin metadata, config defaults, runtime compatibility, and safe boundary are covered by automated tests
+- plugin metadata, config defaults, command/runtime config boundaries, and safe boundary are covered by automated tests
 - the command surface and tool surface contracts are covered by automated tests
 - package-local install docs are covered by automated tests
 - live OpenClaw validation remains manual and operator-run

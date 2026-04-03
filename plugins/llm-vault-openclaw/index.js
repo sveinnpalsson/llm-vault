@@ -351,84 +351,6 @@ function parseTimeoutSeconds(raw) {
   return parsed;
 }
 
-function hasPluginConfigKeys(value) {
-  return isPlainObject(value) && Object.keys(value).some((key) => PLUGIN_CONFIG_KEYS.has(key));
-}
-
-function extractPluginConfigValues(
-  rawConfig,
-  { isRoot = true, insideConfigWrapper = false, isStandaloneConfigWrapper = false } = {},
-) {
-  if (!isPlainObject(rawConfig)) {
-    return {
-      foundConfigKeys: false,
-      foundNestedObject: false,
-      values: {},
-    };
-  }
-
-  const values = {};
-  let foundConfigKeys = false;
-  let foundNestedObject = false;
-  const unknownScalarKeys = [];
-  const objectKeys = Object.keys(rawConfig);
-  const hasDirectConfigKeys = hasPluginConfigKeys(rawConfig);
-  const hasObjectChildren = objectKeys.some((key) => isPlainObject(rawConfig[key]));
-  const validateUnknownKeys =
-    insideConfigWrapper || (isRoot && hasDirectConfigKeys && !hasObjectChildren);
-
-  for (const key of objectKeys) {
-    const value = rawConfig[key];
-
-    if (PLUGIN_CONFIG_KEYS.has(key)) {
-      values[key] = value;
-      foundConfigKeys = true;
-      continue;
-    }
-
-    if (key === "config" && value !== null && value !== undefined && !isPlainObject(value)) {
-      throw new Error("Plugin config wrapper key `config` must be an object when provided.");
-    }
-
-    if (validateUnknownKeys) {
-      unknownScalarKeys.push(key);
-      continue;
-    }
-
-    if (isPlainObject(value)) {
-      foundNestedObject = true;
-      const nested = extractPluginConfigValues(value, {
-        isRoot: false,
-        insideConfigWrapper: key === "config",
-        isStandaloneConfigWrapper: isRoot && key === "config" && objectKeys.length === 1,
-      });
-      foundConfigKeys = foundConfigKeys || nested.foundConfigKeys;
-      foundNestedObject = foundNestedObject || nested.foundNestedObject;
-      Object.assign(values, nested.values);
-      continue;
-    }
-  }
-
-  if (unknownScalarKeys.length > 0) {
-    throw new Error(`Unsupported plugin config key: ${unknownScalarKeys[0]}`);
-  }
-
-  if (
-    (isRoot || isStandaloneConfigWrapper)
-    && !foundConfigKeys
-    && !foundNestedObject
-    && objectKeys.length > 0
-  ) {
-    throw new Error(`Unsupported plugin config key: ${objectKeys[0]}`);
-  }
-
-  return {
-    foundConfigKeys,
-    foundNestedObject,
-    values,
-  };
-}
-
 function resolvePluginConfig(rawConfig = {}, baseConfig = null) {
   if (rawConfig === null || rawConfig === undefined) {
     rawConfig = {};
@@ -437,34 +359,28 @@ function resolvePluginConfig(rawConfig = {}, baseConfig = null) {
     throw new Error("Plugin config must be an object.");
   }
 
-  const extractedConfig = extractPluginConfigValues(rawConfig).values;
-  const base = baseConfig && isPlainObject(baseConfig)
-    ? {
-      repoRoot: optionalConfigString(baseConfig.repoRoot, "repoRoot") || REPO_ROOT,
-      vaultAgentPath:
-          optionalConfigString(baseConfig.vaultAgentPath, "vaultAgentPath")
-          || path.resolve(
-            optionalConfigString(baseConfig.repoRoot, "repoRoot") || REPO_ROOT,
-            DEFAULT_VAULT_AGENT_PATH,
-          ),
-      timeoutSeconds: parseTimeoutSeconds(baseConfig.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS),
+  for (const key of Object.keys(rawConfig)) {
+    if (!PLUGIN_CONFIG_KEYS.has(key)) {
+      throw new Error(`Unsupported plugin config key: ${key}`);
     }
-    : {
-      repoRoot: REPO_ROOT,
-      vaultAgentPath: path.resolve(REPO_ROOT, DEFAULT_VAULT_AGENT_PATH),
-      timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
-    };
+  }
 
-  const repoRootValue = optionalConfigString(extractedConfig.repoRoot, "repoRoot");
-  const repoRoot = repoRootValue ? path.resolve(REPO_ROOT, repoRootValue) : base.repoRoot;
-  const vaultAgentPathValue =
-    optionalConfigString(extractedConfig.vaultAgentPath, "vaultAgentPath");
+  const base = baseConfig === null || baseConfig === undefined
+    ? null
+    : resolvePluginConfig(baseConfig);
+
+  const repoRootValue = optionalConfigString(rawConfig.repoRoot, "repoRoot");
+  const repoRoot = repoRootValue
+    ? path.resolve(REPO_ROOT, repoRootValue)
+    : base?.repoRoot || REPO_ROOT;
+  const vaultAgentPathValue = optionalConfigString(rawConfig.vaultAgentPath, "vaultAgentPath");
   const vaultAgentPath = path.isAbsolute(vaultAgentPathValue)
     ? vaultAgentPathValue
     : vaultAgentPathValue
       ? path.resolve(repoRoot, vaultAgentPathValue)
-      : base.vaultAgentPath;
-  const timeoutSeconds = parseTimeoutSeconds(extractedConfig.timeoutSeconds ?? base.timeoutSeconds);
+      : base?.vaultAgentPath || path.resolve(repoRoot, DEFAULT_VAULT_AGENT_PATH);
+  const timeoutSeconds =
+    parseTimeoutSeconds(rawConfig.timeoutSeconds ?? base?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS);
 
   return {
     repoRoot,
@@ -579,8 +495,7 @@ const plugin = {
       acceptsArgs: true,
       handler: async (ctx) => {
         try {
-          const runtimeConfig = resolvePluginConfig(ctx?.config ?? {}, pluginConfig);
-          return { text: await handleVaultCommand(ctx?.args, runtimeConfig) };
+          return { text: await handleVaultCommand(ctx?.args, pluginConfig) };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return { text: `${message}\n\n${usage()}` };
@@ -612,10 +527,8 @@ export {
   buildSearchRedactedArgs,
   createSearchTool,
   createStatusTool,
-  extractPluginConfigValues,
   formatToolResult,
   handleVaultCommand,
-  hasPluginConfigKeys,
   parseSearchArgs,
   parseSearchFilters,
   runSearchRedacted,

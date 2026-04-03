@@ -88,7 +88,9 @@ If the agent already uses `tools.allow`, append those same tool names there inst
 
 - `plugin-config.example.json` contains the exact inner payload for `plugins.entries.llm-vault.config`
 - `timeoutSeconds` is enforced by the plugin wrapper process timeout; it is not forwarded as a `vault-agent` CLI flag
-- the plugin tolerates OpenClaw runtime wrapper/context objects such as `meta`, `wizard`, `apiKey`, and similar envelopes, but only reads the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` keys
+- OpenClaw passes `plugins.entries.llm-vault.config` to the plugin as `api.pluginConfig` during registration
+- command `ctx.config` is the full OpenClaw config snapshot, not the llm-vault plugin config payload
+- strict plugin config validation still applies only to the documented `repoRoot`, `vaultAgentPath`, and `timeoutSeconds` keys
 - this package is still repo-local and operator-validated, not a published standalone release
 
 See [OpenClaw Agent Setup Flow](../../docs/openclaw-agent-setup.md), [OpenClaw Plugin Contract](../../docs/openclaw-plugin.md), and [Manual OpenClaw Agent Validation](../../docs/manual-openclaw-agent-validation.md) for the full workflow.
