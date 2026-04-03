@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import socket
 import sqlite3
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REGISTRY_DB = str(ROOT / "state" / "vault_registry.db")
 DEFAULT_VECTORS_DB = str(ROOT / "state" / "vault_vectors.db")
 DEFAULT_INBOX_SCANNER = str(ROOT / "state" / "scanner_inbox")
+DEFAULT_MAIL_BRIDGE_PASSWORD_ENV = "INBOX_VAULT_DB_PASSWORD"
 
 
 def to_iso_utc(epoch_value: Any) -> str | None:
@@ -60,6 +64,217 @@ def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     except sqlite3.Error:
         return False
     return any(str(row[1]) == column for row in rows)
+
+
+def _is_local_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
+def _endpoint_reachable(url: str, *, timeout_seconds: float = 1.0) -> tuple[bool, str]:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return False, "missing host"
+    try:
+        port = parsed.port
+    except ValueError:
+        return False, "invalid port"
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    try:
+        with socket.create_connection((host, int(port)), timeout=max(0.2, float(timeout_seconds))):
+            return True, ""
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _warning(category: str, message: str, *, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "category": category,
+        "severity": "warning",
+        "message": message,
+    }
+    if details:
+        payload["details"] = details
+    return payload
+
+
+def build_warnings(
+    *,
+    docs_roots: list[str],
+    photos_roots: list[str],
+    summary_base_url: str,
+    embed_base_url: str,
+    redaction_base_url: str,
+    photo_analysis_url: str,
+    disable_photo_analysis: bool,
+    pdf_parse_url: str,
+    disable_pdf_service: bool,
+    mail_bridge_enabled: bool,
+    mail_bridge_db_path: str,
+    mail_bridge_password_env: str,
+) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+
+    if not str(os.getenv("LLM_VAULT_DB_PASSWORD", "")).strip():
+        warnings.append(
+            _warning(
+                "missing_db_password",
+                "LLM_VAULT_DB_PASSWORD is unset; encrypted DB operations will fail.",
+                details={"env_var": "LLM_VAULT_DB_PASSWORD"},
+            )
+        )
+
+    docs_roots_clean = [str(root).strip() for root in docs_roots if str(root).strip()]
+    photos_roots_clean = [str(root).strip() for root in photos_roots if str(root).strip()]
+    if not docs_roots_clean and not photos_roots_clean:
+        warnings.append(
+            _warning(
+                "missing_content_roots",
+                "No docs_roots or photos_roots configured; update/repair has no local content to ingest.",
+            )
+        )
+    for kind, roots in (("docs", docs_roots_clean), ("photos", photos_roots_clean)):
+        for root in roots:
+            path = Path(root).expanduser()
+            if not path.exists():
+                warnings.append(
+                    _warning(
+                        "content_root_missing",
+                        f"{kind} root does not exist: {root}",
+                        details={"source_kind": kind, "path": root},
+                    )
+                )
+                continue
+            if not path.is_dir():
+                warnings.append(
+                    _warning(
+                        "content_root_not_directory",
+                        f"{kind} root is not a directory: {root}",
+                        details={"source_kind": kind, "path": root},
+                    )
+                )
+
+    service_urls = {
+        "summary": str(summary_base_url or "").strip(),
+        "embedding": str(embed_base_url or "").strip(),
+        "redaction": str(redaction_base_url or "").strip(),
+    }
+    for service_name, endpoint in service_urls.items():
+        if not endpoint:
+            continue
+        if not _is_local_url(endpoint):
+            warnings.append(
+                _warning(
+                    "local_only_url_violation",
+                    f"{service_name} URL must be local-only, got: {endpoint}",
+                    details={"service": service_name, "url": endpoint},
+                )
+            )
+            continue
+        ok, reason = _endpoint_reachable(endpoint)
+        if not ok:
+            warnings.append(
+                _warning(
+                    "endpoint_unreachable",
+                    f"{service_name} endpoint is configured but unreachable: {endpoint}",
+                    details={"service": service_name, "url": endpoint, "reason": reason},
+                )
+            )
+
+    photo_url = str(photo_analysis_url or "").strip() or str(os.getenv("VAULT_PHOTO_ANALYSIS_URL", "")).strip()
+    if disable_photo_analysis:
+        pass
+    elif not photo_url:
+        warnings.append(
+            _warning(
+                "optional_service_disabled_unset",
+                "photo_analysis is disabled because URL is unset.",
+                details={"service": "photo_analysis", "env_var": "VAULT_PHOTO_ANALYSIS_URL"},
+            )
+        )
+    elif not _is_local_url(photo_url):
+        warnings.append(
+            _warning(
+                "local_only_url_violation",
+                f"photo_analysis URL must be local-only, got: {photo_url}",
+                details={"service": "photo_analysis", "url": photo_url},
+            )
+        )
+    else:
+        ok, reason = _endpoint_reachable(photo_url)
+        if not ok:
+            warnings.append(
+                _warning(
+                    "endpoint_unreachable",
+                    f"photo_analysis endpoint is configured but unreachable: {photo_url}",
+                    details={"service": "photo_analysis", "url": photo_url, "reason": reason},
+                )
+            )
+
+    pdf_url = str(pdf_parse_url or "").strip() or str(os.getenv("VAULT_PDF_PARSE_URL", "")).strip()
+    if disable_pdf_service:
+        pass
+    elif not pdf_url:
+        warnings.append(
+            _warning(
+                "optional_service_disabled_unset",
+                "pdf_parse is disabled because parse_url is unset.",
+                details={"service": "pdf_parse", "env_var": "VAULT_PDF_PARSE_URL"},
+            )
+        )
+    elif not _is_local_url(pdf_url):
+        warnings.append(
+            _warning(
+                "local_only_url_violation",
+                f"pdf_parse URL must be local-only, got: {pdf_url}",
+                details={"service": "pdf_parse", "url": pdf_url},
+            )
+        )
+    else:
+        ok, reason = _endpoint_reachable(pdf_url)
+        if not ok:
+            warnings.append(
+                _warning(
+                    "endpoint_unreachable",
+                    f"pdf_parse endpoint is configured but unreachable: {pdf_url}",
+                    details={"service": "pdf_parse", "url": pdf_url, "reason": reason},
+                )
+            )
+
+    if mail_bridge_enabled:
+        bridge_db_path = str(mail_bridge_db_path or "").strip()
+        if not bridge_db_path:
+            warnings.append(
+                _warning(
+                    "mail_bridge_missing_db_path",
+                    "mail_bridge is enabled but db_path is unset.",
+                    details={"service": "mail_bridge"},
+                )
+            )
+        elif not Path(bridge_db_path).expanduser().exists():
+            warnings.append(
+                _warning(
+                    "mail_bridge_db_missing",
+                    f"mail_bridge db_path does not exist: {bridge_db_path}",
+                    details={"service": "mail_bridge", "path": bridge_db_path},
+                )
+            )
+        password_env = str(mail_bridge_password_env or DEFAULT_MAIL_BRIDGE_PASSWORD_ENV).strip() or DEFAULT_MAIL_BRIDGE_PASSWORD_ENV
+        if not str(os.getenv(password_env, "")).strip():
+            warnings.append(
+                _warning(
+                    "mail_bridge_missing_password",
+                    f"mail_bridge is enabled but password env var is unset: {password_env}",
+                    details={"service": "mail_bridge", "env_var": password_env},
+                )
+            )
+
+    return warnings
 
 
 def summary_status_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -405,9 +620,19 @@ def main() -> int:
     ap.add_argument("--oneline", action="store_true", help="emit compact one-line status")
     ap.add_argument("--mail-bridge-enabled", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--mail-bridge-db-path", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--mail-bridge-password-env", default=DEFAULT_MAIL_BRIDGE_PASSWORD_ENV, help=argparse.SUPPRESS)
     ap.add_argument("--mail-bridge-include-account", action="append", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--mail-bridge-no-import-summary", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--mail-max-body-chunks", type=int, default=12, help=argparse.SUPPRESS)
+    ap.add_argument("--docs-root", action="append", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--photos-root", action="append", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--summary-base-url", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--embed-base-url", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--redaction-base-url", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--photo-analysis-url", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--disable-photo-analysis", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--pdf-parse-url", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--disable-pdf-service", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     registry_db = Path(args.registry_db)
@@ -582,11 +807,28 @@ def main() -> int:
             last_run=data["registry"].get("last_sync_run"),
         )
         data["health"] = health
+        warnings = build_warnings(
+            docs_roots=list(args.docs_root or []),
+            photos_roots=list(args.photos_root or []),
+            summary_base_url=str(args.summary_base_url or ""),
+            embed_base_url=str(args.embed_base_url or ""),
+            redaction_base_url=str(args.redaction_base_url or ""),
+            photo_analysis_url=str(args.photo_analysis_url or ""),
+            disable_photo_analysis=bool(args.disable_photo_analysis),
+            pdf_parse_url=str(args.pdf_parse_url or ""),
+            disable_pdf_service=bool(args.disable_pdf_service),
+            mail_bridge_enabled=bool(args.mail_bridge_enabled),
+            mail_bridge_db_path=str(args.mail_bridge_db_path or ""),
+            mail_bridge_password_env=str(args.mail_bridge_password_env or DEFAULT_MAIL_BRIDGE_PASSWORD_ENV),
+        )
+        data["warnings"] = warnings
+        data["warning_count"] = len(warnings)
 
         if args.oneline:
             last = data["registry"].get("last_sync_run") or {}
             last_status = str(last.get("status") or "none")
             last_finished = str(last.get("finished_at") or "never")
+            warning_categories = sorted({str(w.get("category") or "") for w in warnings if str(w.get("category") or "")})
             print(
                 " ".join(
                     [
@@ -619,6 +861,8 @@ def main() -> int:
                         f"redacted_doc_sources={docs_vector.get('sources_indexed', 0)}/{docs_registry.get('files_total', 0)}",
                         f"redacted_photo_sources={photos_vector.get('sources_indexed', 0)}/{photos_registry.get('files_total', 0)}",
                         f"last_run={last_status}@{last_finished}",
+                        f"warnings={len(warnings)}",
+                        f"warning_categories={','.join(warning_categories) if warning_categories else 'none'}",
                         f"health={health}",
                     ]
                 )
@@ -634,6 +878,13 @@ def main() -> int:
         print(f"- Vectors DB:  {data['paths']['vectors_db']} (exists={data['paths']['vectors_db_exists']})")
         print(f"- Inbox scanner: {data['paths']['inbox_scanner']}")
         print(f"- Health: {data['health']}")
+        print(f"- Warnings: {data['warning_count']}")
+        if warnings:
+            print("- Warning details:")
+            for warning in warnings:
+                category = str(warning.get("category") or "warning")
+                message = str(warning.get("message") or "")
+                print(f"  - [{category}] {message}")
         print("")
         print("Registry")
         print(f"- Oldest file mtime (UTC): {data['registry']['overall_oldest_file_mtime_utc']}")

@@ -99,6 +99,7 @@ Before the first real run:
 - note: `[photo_analysis]` and `[pdf]` are disabled by default when URL fields are absent/commented-out; set `url` / `parse_url` (or `VAULT_PHOTO_ANALYSIS_URL` / `VAULT_PDF_PARSE_URL`) to enable
 - create `state/` if it does not exist yet
 - export `LLM_VAULT_DB_PASSWORD`
+- run `vault-ops status` and fix any wiring warnings before long ingest runs
 
 The first `vault-ops update` initializes the encrypted registry/vector state for this checkout. A bounded first pass can leave the system usable but degraded until the remaining corpus is indexed.
 

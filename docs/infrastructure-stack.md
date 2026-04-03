@@ -41,6 +41,7 @@ Runtime defaults:
 - summary, embedding, and model-redaction share one local default base URL: `http://127.0.0.1:8080/v1`
 - photo-analysis and PDF parse services are optional and disabled unless explicitly configured via `[photo_analysis].url` / `[pdf].parse_url` or `VAULT_PHOTO_ANALYSIS_URL` / `VAULT_PDF_PARSE_URL`
 - `[runtime].max` can set a default source-count cap for bounded `vault-ops update` / `repair` runs
+- `vault-ops status` reports setup warnings for common local miswires (missing DB password, missing content roots, optional service unset, non-local URLs, and unreachable configured endpoints)
 
 All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or equivalent loopback).
 

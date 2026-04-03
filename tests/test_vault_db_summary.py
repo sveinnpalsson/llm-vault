@@ -295,3 +295,109 @@ def test_status_json_reports_mail_bridge_source_stats(
     assert payload["registry"]["sources"]["mail"]["messages_total"] == 1
     assert payload["registry"]["sources"]["mail"]["with_summary"] == 1
     assert payload["vectors"]["levels"]["redacted"]["sources"]["mail"]["sources_indexed"] == 1
+
+
+def test_status_json_emits_high_signal_config_warnings(tmp_path: Path, monkeypatch, capsys) -> None:
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    inbox_scanner = tmp_path / "scanner"
+    inbox_scanner.mkdir()
+    docs_root = tmp_path / "missing-docs"
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        reg.commit()
+    finally:
+        reg.close()
+
+    monkeypatch.setenv("LLM_VAULT_DB_PASSWORD", "test-password")
+    monkeypatch.delenv("VAULT_PHOTO_ANALYSIS_URL", raising=False)
+    monkeypatch.delenv("VAULT_PDF_PARSE_URL", raising=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "vault_db_summary.py",
+            "--registry-db",
+            str(registry_db),
+            "--vectors-db",
+            str(vector_db),
+            "--inbox-scanner",
+            str(inbox_scanner),
+            "--docs-root",
+            str(docs_root),
+            "--summary-base-url",
+            "http://127.0.0.1:1/v1",
+            "--photo-analysis-url",
+            "http://example.com/analyze",
+            "--json",
+        ],
+    )
+    rc = vault_db_summary.main()
+    assert rc == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    categories = {warning["category"] for warning in payload["warnings"]}
+    assert payload["warning_count"] == len(payload["warnings"])
+    assert "content_root_missing" in categories
+    assert "optional_service_disabled_unset" in categories
+    assert "endpoint_unreachable" in categories
+    assert "local_only_url_violation" in categories
+
+
+def test_status_oneline_includes_warning_summary(tmp_path: Path, monkeypatch, capsys) -> None:
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    inbox_scanner = tmp_path / "scanner"
+    inbox_scanner.mkdir()
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        reg.commit()
+    finally:
+        reg.close()
+
+    monkeypatch.setenv("LLM_VAULT_DB_PASSWORD", "test-password")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "vault_db_summary.py",
+            "--registry-db",
+            str(registry_db),
+            "--vectors-db",
+            str(vector_db),
+            "--inbox-scanner",
+            str(inbox_scanner),
+            "--oneline",
+        ],
+    )
+    rc = vault_db_summary.main()
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert "warnings=" in out
+    assert "warning_categories=" in out
+
+
+def test_build_warnings_includes_missing_db_password(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_VAULT_DB_PASSWORD", raising=False)
+    warnings = vault_db_summary.build_warnings(
+        docs_roots=[],
+        photos_roots=[],
+        summary_base_url="",
+        embed_base_url="",
+        redaction_base_url="",
+        photo_analysis_url="",
+        disable_photo_analysis=True,
+        pdf_parse_url="",
+        disable_pdf_service=True,
+        mail_bridge_enabled=False,
+        mail_bridge_db_path="",
+        mail_bridge_password_env="INBOX_VAULT_DB_PASSWORD",
+    )
+    categories = {warning["category"] for warning in warnings}
+    assert "missing_db_password" in categories
