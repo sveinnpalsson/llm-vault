@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
+import pytest
 from vault_db import connect_vault_db
 from vault_redaction import PersistentRedactionMap
 from vault_registry_sync import (
@@ -11,6 +13,8 @@ from vault_registry_sync import (
     PhotoAnalysisResult,
     SummaryConfig,
     SummaryResult,
+    _resolve_pdf_parse_config,
+    _resolve_photo_analysis_config,
     backfill_missing_photo_analysis,
     count_pending_summary_backfill,
     default_docs_dest_root,
@@ -348,6 +352,81 @@ def test_portable_default_paths_can_be_derived_from_vault_root_env(monkeypatch, 
     assert default_inbox_scanner() == str(content_root / "inbox" / "scanner_in")
     assert default_docs_dest_root() == str(content_root / "raw" / "documents" / "scanner_inbox")
     assert default_photos_dest_root() == str(content_root / "raw" / "photos" / "scanner_inbox")
+
+
+def test_resolve_photo_analysis_disabled_without_explicit_url(monkeypatch) -> None:
+    monkeypatch.delenv("VAULT_PHOTO_ANALYSIS_URL", raising=False)
+    args = argparse.Namespace(
+        photo_analysis_url=None,
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_photo_analysis=False,
+    )
+    cfg = _resolve_photo_analysis_config(args)
+    assert cfg.enabled is False
+    assert cfg.analyze_url == ""
+    assert cfg.force is False
+
+
+def test_resolve_photo_analysis_enabled_from_env_url(monkeypatch) -> None:
+    monkeypatch.setenv("VAULT_PHOTO_ANALYSIS_URL", "http://127.0.0.1:18110/analyze")
+    args = argparse.Namespace(
+        photo_analysis_url=None,
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_photo_analysis=False,
+    )
+    cfg = _resolve_photo_analysis_config(args)
+    assert cfg.enabled is True
+    assert cfg.analyze_url == "http://127.0.0.1:18110/analyze"
+
+
+def test_resolve_photo_analysis_rejects_non_local_url_when_enabled() -> None:
+    args = argparse.Namespace(
+        photo_analysis_url="http://example.com/analyze",
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_photo_analysis=False,
+    )
+    with pytest.raises(ValueError, match="photo analysis URL must be local-only"):
+        _resolve_photo_analysis_config(args)
+
+
+def test_resolve_pdf_service_disabled_without_explicit_url(monkeypatch) -> None:
+    monkeypatch.delenv("VAULT_PDF_PARSE_URL", raising=False)
+    args = argparse.Namespace(
+        pdf_parse_url=None,
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        disable_pdf_service=False,
+    )
+    cfg = _resolve_pdf_parse_config(args)
+    assert cfg.enabled is False
+    assert cfg.parse_url == ""
+
+
+def test_resolve_pdf_service_enabled_from_env_url(monkeypatch) -> None:
+    monkeypatch.setenv("VAULT_PDF_PARSE_URL", "http://127.0.0.1:18084/v1/pdf/parse")
+    args = argparse.Namespace(
+        pdf_parse_url=None,
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        disable_pdf_service=False,
+    )
+    cfg = _resolve_pdf_parse_config(args)
+    assert cfg.enabled is True
+    assert cfg.parse_url == "http://127.0.0.1:18084/v1/pdf/parse"
+
+
+def test_resolve_pdf_service_rejects_non_local_url_when_enabled() -> None:
+    args = argparse.Namespace(
+        pdf_parse_url="http://example.com/v1/pdf/parse",
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        disable_pdf_service=False,
+    )
+    with pytest.raises(ValueError, match="PDF parse URL must be local-only"):
+        _resolve_pdf_parse_config(args)
 
 
 def test_index_photo_file_marks_document_ocr_empty_when_text_missing(tmp_path: Path) -> None:

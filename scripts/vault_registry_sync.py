@@ -32,8 +32,6 @@ from typing import Any, Iterable, Optional
 from vault_db import SQLCIPHER_AVAILABLE, connect_vault_db, resolve_db_password
 from vault_service_defaults import (
     DEFAULT_LOCAL_MODEL_BASE_URL,
-    DEFAULT_LOCAL_PDF_PARSE_URL,
-    DEFAULT_LOCAL_PHOTO_ANALYSIS_URL,
 )
 from vault_sources import select_active_source_handlers, source_choices
 
@@ -52,10 +50,8 @@ DEFAULT_SUMMARY_TIMEOUT_SECONDS = 90
 DEFAULT_SUMMARY_MAX_INPUT_CHARS = 12000
 DEFAULT_SUMMARY_MAX_OUTPUT_CHARS = 650
 
-DEFAULT_PHOTO_ANALYZER_URL = DEFAULT_LOCAL_PHOTO_ANALYSIS_URL
 DEFAULT_PHOTO_ANALYZER_TIMEOUT_SECONDS = 45
 DEFAULT_PHOTO_ANALYZER_FORCE = False
-DEFAULT_PDF_PARSE_URL = DEFAULT_LOCAL_PDF_PARSE_URL
 DEFAULT_PDF_PARSE_TIMEOUT_SECONDS = 600
 DEFAULT_PDF_PARSE_PROFILE = "auto"
 ROOT = Path(__file__).resolve().parents[1]
@@ -440,9 +436,7 @@ def _resolve_summary_config(args: argparse.Namespace) -> SummaryConfig:
 
 
 def _resolve_photo_analysis_config(args: argparse.Namespace) -> PhotoAnalysisConfig:
-    analyze_url = (args.photo_analysis_url or "").strip() or (
-        str(os.getenv("VAULT_PHOTO_ANALYSIS_URL", DEFAULT_PHOTO_ANALYZER_URL)).strip()
-    )
+    analyze_url = (args.photo_analysis_url or "").strip() or str(os.getenv("VAULT_PHOTO_ANALYSIS_URL", "")).strip()
     timeout_seconds = int(
         args.photo_analysis_timeout
         if args.photo_analysis_timeout is not None
@@ -452,7 +446,7 @@ def _resolve_photo_analysis_config(args: argparse.Namespace) -> PhotoAnalysisCon
     force = DEFAULT_PHOTO_ANALYZER_FORCE
     force = force or bool(args.photo_analysis_force) or force_env in {"1", "true", "yes", "on"}
 
-    enabled = not bool(args.disable_photo_analysis)
+    enabled = not bool(args.disable_photo_analysis) and bool(analyze_url)
     if enabled and not _is_local_url(analyze_url):
         raise ValueError(f"photo analysis URL must be local-only, got: {analyze_url}")
 
@@ -465,9 +459,7 @@ def _resolve_photo_analysis_config(args: argparse.Namespace) -> PhotoAnalysisCon
 
 
 def _resolve_pdf_parse_config(args: argparse.Namespace) -> PdfParseConfig:
-    parse_url = (args.pdf_parse_url or "").strip() or (
-        str(os.getenv("VAULT_PDF_PARSE_URL", DEFAULT_PDF_PARSE_URL)).strip()
-    )
+    parse_url = (args.pdf_parse_url or "").strip() or str(os.getenv("VAULT_PDF_PARSE_URL", "")).strip()
     timeout_seconds = int(
         args.pdf_parse_timeout
         if args.pdf_parse_timeout is not None
@@ -479,7 +471,7 @@ def _resolve_pdf_parse_config(args: argparse.Namespace) -> PdfParseConfig:
     if profile not in {"auto", "native", "ocr"}:
         raise ValueError(f"unsupported PDF parse profile: {profile}")
 
-    enabled = not bool(args.disable_pdf_service)
+    enabled = not bool(args.disable_pdf_service) and bool(parse_url)
     if enabled and not _is_local_url(parse_url):
         raise ValueError(f"PDF parse URL must be local-only, got: {parse_url}")
 

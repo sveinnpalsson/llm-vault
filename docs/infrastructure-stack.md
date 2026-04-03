@@ -39,7 +39,7 @@ Key sections:
 Runtime defaults:
 
 - summary, embedding, and model-redaction share one local default base URL: `http://127.0.0.1:8080/v1`
-- photo-analysis and PDF parse services are optional and should normally be configured explicitly for the local stack that is actually running
+- photo-analysis and PDF parse services are optional and disabled unless explicitly configured via `[photo_analysis].url` / `[pdf].parse_url` or `VAULT_PHOTO_ANALYSIS_URL` / `VAULT_PDF_PARSE_URL`
 - `[runtime].max` can set a default source-count cap for bounded `vault-ops update` / `repair` runs
 
 All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or equivalent loopback).
@@ -68,6 +68,7 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 
 - optional photo caption/category/OCR enrichment
 - expects a local HTTP endpoint configured at `[photo_analysis].url`
+- explicit disable remains available through `--disable-photo-analysis` or `[photo_analysis].disable_service = true`
 - `llm-vault` consumes analyzer output through a `sidecar` payload with fields such as `caption`, `category.primary`, and `text.raw`
 - if missing or disabled, photos still ingest but enrichment and OCR-backed photo search are limited
 
@@ -75,6 +76,7 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 
 - optional fallback for scanned or sparse PDFs
 - expects a local HTTP endpoint configured at `[pdf].parse_url`
+- explicit disable remains available through `--disable-pdf-service` or `[pdf].disable_service = true`
 - if missing, native-text PDFs can still use `pdftotext`, but scanned PDFs may ingest with weak text
 
 ### Mail bridge

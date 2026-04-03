@@ -542,6 +542,25 @@ max = 11
     assert args_update._mail_bridge_max_body_chunks == 7
 
 
+def test_config_file_can_disable_optional_services(tmp_path: Path) -> None:
+    config_path = tmp_path / "vault-ops.toml"
+    config_path.write_text(
+        """
+[photo_analysis]
+disable_service = true
+
+[pdf]
+disable_service = true
+""",
+        encoding="utf-8",
+    )
+    parser = vault_ops_cli.build_parser()
+    args = parser.parse_args(["update", "--config", str(config_path)])
+    args = vault_ops_cli._apply_config_defaults(args)
+    assert args.disable_photo_analysis is True
+    assert args.disable_pdf_service is True
+
+
 def test_cli_flags_override_config_defaults(tmp_path: Path) -> None:
     config_path = tmp_path / "vault-ops.toml"
     config_path.write_text(

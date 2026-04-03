@@ -60,8 +60,8 @@ Usually required for a useful setup:
 
 Optional:
 
-- a local photo-analysis service
-- a local PDF parse service for scanned PDFs
+- a local photo-analysis service (enabled only when URL is explicitly configured)
+- a local PDF parse service for scanned PDFs (enabled only when URL is explicitly configured)
 - a read-only `inbox-vault` bridge for mail
 
 ## Minimal `vault-ops.toml`
@@ -96,6 +96,7 @@ Before the first real run:
 
 - add at least one `docs_roots` or `photos_roots` entry
 - point `[summary]`, `[embedding]`, `[redaction]`, and any optional `[photo_analysis]` / `[pdf]` sections at reachable local endpoints
+- note: `[photo_analysis]` and `[pdf]` are disabled by default when URL fields are absent/commented-out; set `url` / `parse_url` (or `VAULT_PHOTO_ANALYSIS_URL` / `VAULT_PDF_PARSE_URL`) to enable
 - create `state/` if it does not exist yet
 - export `LLM_VAULT_DB_PASSWORD`
 
