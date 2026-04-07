@@ -9,8 +9,9 @@
 5. Add a fresh-agent setup path that is documented end to end and validated from a clean OpenClaw agent install.
 6. Keep the packaged `vault-ops` and `vault-agent` entry points compatible as the plugin path grows.
 7. Add plugin/install smoke checks that prove a fresh agent can install, configure, discover the plugin, and run redacted search without repo-specific knowledge.
-8. Add a redaction benchmark harness with a pinned evaluation slice, reproducible run command, and reportable metrics.
+8. Add the canonical redaction benchmark harness with a pinned evaluation slice, reproducible run command, and reportable metrics.
 9. Planned OpenClaw direction: keep a single `llm_vault_search` tool name and derive the effective search clearance/level from config or policy, potentially per-agent or per-plugin. Until that lands, `llm_vault_search` stays redacted-only and safe by default.
+10. Keep `inbox-vault` aligned to the `llm-vault` redaction contract so mail-specific validation does not become a separate benchmark program.
 
 ## Release operations
 
