@@ -1,6 +1,6 @@
 # Redaction Evaluation
 
-This directory is the release-readable surface for the current `llm-vault` redaction benchmark work.
+This directory is the release-readable benchmark surface for the current `llm-vault` redaction pipeline.
 
 What is tracked here:
 
@@ -29,18 +29,6 @@ The committed repo-owned fixtures in this directory are smaller smoke fixtures. 
 
 - `tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl`
 - `tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl`
-
-## Current Local Setup
-
-The tracked summary artifacts reflect one local operator run with:
-
-- config path: `vault-ops.toml`
-- redaction base URL: `http://127.0.0.1:18080/v1`
-- model: `qwen3-14b`
-- profile: `standard`
-- timeout: `45` seconds
-
-These numbers should be read as results for that local setup, not as a general claim about every deployment.
 
 ## Exact Reproduction Commands
 
@@ -98,35 +86,36 @@ mkdir -p tmp/redaction-eval/reports
 
 The harness writes append-only checkpoint sidecars beside `--output` and automatically resumes from them on rerun.
 
-## Current Result Summary
+## Current Results
 
-Validation split:
+Tested setup from the tracked summary artifacts: `vault-ops.toml`, `http://127.0.0.1:18080/v1`, model `qwen3-14b`, profile `standard`, timeout `45s`. These numbers are for that local setup.
 
-- `regex`: `cases_total=1065`, `cases_with_mismatch=1000`, `tp=680`, `fp=271`, `fn=3521`, `precision=0.7150368033648791`, `recall=0.16186622232801715`, `f1=0.2639751552795031`, `f2=0.1914953534215714`, `llm_candidate_cases=0`, `llm_candidates_total=0`
-- `hybrid`: `cases_total=1065`, `cases_with_mismatch=923`, `tp=1418`, `fp=495`, `fn=2783`, `precision=0.7412441191845269`, `recall=0.33753868126636516`, `f1=0.46385345109584564`, `f2=0.37880002137094626`, `llm_candidate_cases=676`, `llm_candidates_total=1775`
-- delta vs `regex`: `precision=+0.02620731581964786`, `recall=+0.17567245893834801`, `f1=+0.19987829581634253`, `f2=+0.18730466794937486`, `cases_with_mismatch=-77`
+### Hybrid vs. Regex Delta
 
-Train split:
+| Split | Precision | Recall | F1 | F2 | Mismatches |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Validation | +0.0262 | +0.1757 | +0.1999 | +0.1873 | -77 |
+| Train | +0.0294 | +0.1665 | +0.1925 | +0.1784 | -288 |
 
-- `regex`: `cases_total=3817`, `cases_with_mismatch=3666`, `tp=2525`, `fp=1062`, `fn=13623`, `precision=0.7039308614441037`, `recall=0.15636611345058213`, `f1=0.2558905497846466`, `f2=0.1851743205385823`, `llm_candidate_cases=0`, `llm_candidates_total=0`
-- `hybrid`: `cases_total=3817`, `cases_with_mismatch=3378`, `tp=5214`, `fp=1896`, `fn=10934`, `precision=0.7333333333333333`, `recall=0.3228882833787466`, `f1=0.4483618539857253`, `f2=0.36358818443000196`, `llm_candidate_cases=2544`, `llm_candidates_total=6549`
-- delta vs `regex`: `precision=+0.02940247188922962`, `recall=+0.16652216992816446`, `f1=+0.19247130420107872`, `f2=+0.17841386389141967`, `cases_with_mismatch=-288`
+### Absolute Metrics
+
+| Split | Mode | Precision | Recall | F1 | F2 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Validation | `regex` | 0.7150 | 0.1619 | 0.2640 | 0.1915 |
+| Validation | `hybrid` | 0.7412 | 0.3375 | 0.4639 | 0.3788 |
+| Train | `regex` | 0.7039 | 0.1564 | 0.2559 | 0.1852 |
+| Train | `hybrid` | 0.7333 | 0.3229 | 0.4484 | 0.3636 |
+
+### Leak Framing on the Hybrid Run
+
+| Split | Expected placeholders | Correctly redacted | Leaked | Unexpected |
+| --- | ---: | ---: | ---: | ---: |
+| Validation | 4201 | 1418 | 2783 | 495 |
+| Train | 16148 | 5214 | 10934 | 1896 |
+
+On both tracked splits, `hybrid` materially improves recall and F-scores over `regex`, but it still leaves a large number of expected placeholders unredacted.
 
 The exact per-run summaries and weak-category counts are captured in the tracked JSON summaries in [`reports/`](reports).
-
-## What This Proves
-
-- The current `hybrid` path materially outperforms `regex` alone on the operator-prepared AI4Privacy validation and train fixtures for this local setup.
-- The benchmark harness can compare modes, emit machine-readable summaries, and resume long local runs.
-- Model-backed candidate detection is active in the current local setup: `llm_candidates_total=1775` on validation and `6549` on train.
-
-## What This Does Not Yet Prove
-
-- It does not prove span-level accuracy; the current scaffold scores placeholder keys, not token overlap.
-- It does not prove retrieval quality after redaction across vault search workflows.
-- It does not prove photo, screenshot, OCR-heavy document, or bridged-mail retrieval behavior yet.
-- It does not prove that every local model or every endpoint wiring will reproduce the same numbers.
-- It does not prove a fully automated public-dataset preparation flow inside git; preparation is still operator-run and local-only.
 
 ## Current Weak Categories
 
@@ -138,8 +127,9 @@ Across both full splits, the main remaining weak areas are concentrated and visi
 - `PERSON` still misses often: `346` missing on validation and `1273` on train after hybrid.
 - Over-redaction pressure is concentrated in `PHONE`, then `ACCOUNT` and `PERSON`: validation hybrid unexpected counts are `PHONE=264`, `PERSON=126`, `ACCOUNT=88`; train hybrid unexpected counts are `PHONE=1029`, `ACCOUNT=437`, `PERSON=304`.
 
-## Follow-On Work
+## Scope
 
-- Add a pinned, reproducible local manifest for the validation/train fixture preparation path instead of relying on operator-held prepared JSONL files.
-- Add retrieval-facing benchmark slices for OCR-heavy docs, screenshots, scanned PDFs, and bridged mail.
-- Add span-level scoring only after the placeholder-key benchmark and label mapping stabilize.
+- This benchmark scores placeholder keys, not span overlap.
+- It does not yet measure retrieval quality after redaction across vault search workflows.
+- It does not yet cover photo, screenshot, OCR-heavy document, scanned-PDF, or bridged-mail behavior.
+- Different local models or endpoint wiring can change the numbers materially.

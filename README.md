@@ -16,6 +16,12 @@ Use this repo when you want local retrieval over private content without handing
 
 This repo is installable from a checkout with `pip install -e .[dev]`. That editable install exposes `vault-ops`, `vault-agent`, and `redaction-eval`. The OpenClaw integration in this repo is a repo-local plugin package, not a published standalone plugin release.
 
+## Recommended Local Stack
+
+The diagram below shows a practical local compute stack for `llm-vault`, including recommended models and companion tools that work well for a home setup on consumer GPUs. See [Infrastructure stack and config shape](docs/infrastructure-stack.md) for the full config shape and local service contracts behind it.
+
+![llm-vault local stack pipeline](assets/pipeline-figure.png)
+
 The release-readable redaction benchmark surface lives under [`eval/redaction/`](eval/redaction/README.md). It keeps the current local compare commands, tracked summary artifacts, and the repo-owned seed fixtures in one place without checking the large raw benchmark outputs into git.
 
 ## Safety Boundary
