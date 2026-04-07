@@ -1,6 +1,6 @@
 # Manual OpenClaw Agent Validation
 
-This checklist is intentionally manual and operator-run. It does not replace release validation, and this repo should not claim fresh OpenClaw agent coverage until Svenni runs it on a clean agent setup.
+This checklist is intentionally manual and operator-run. It does not replace release validation, and this repo should not claim fresh OpenClaw agent coverage until it has been run on a clean agent setup.
 
 ## Goal
 
@@ -96,4 +96,4 @@ vault-agent search-redacted "tax receipt" --source docs --top-k 3
 - Use the installed `vault-ops` and `vault-agent` commands for this check, not the repo-root `./vault-ops` or `./vault-agent` compatibility shims.
 - `timeoutSeconds` in the plugin config is wrapper-enforced by the plugin process timeout; it is not forwarded into `vault-agent` as a CLI flag.
 - The plugin scaffold remains agent-safe only. Do not use it to exercise operator-only `vault-ops` workflows.
-- This checklist is a preparation path for Svenni's final fresh-agent validation. Passing it locally does not mean release validation is complete.
+- This checklist is a preparation path for final fresh-agent validation. Passing it locally does not mean release validation is complete.

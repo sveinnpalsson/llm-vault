@@ -16,22 +16,6 @@ Use this repo when you want local retrieval over private content without handing
 
 This repo is installable from a checkout with `pip install -e .[dev]`. The OpenClaw integration in this repo is a repo-local plugin package, not a published standalone plugin release.
 
-## Redaction ownership and evaluation
-
-`llm-vault` is the canonical home for the shared redaction contract across docs, photos, and bridged mail. That means this repo owns:
-
-- redaction policy/versioning
-- placeholder semantics and retrieval-safe output expectations
-- the benchmark harness and reportable quality metrics
-- cross-modality evaluation for docs, OCR-heavy photos, and bridged mail retrieval
-
-`inbox-vault` still owns Gmail sync, mail-side enrichment, and mail-specific application details, but it should not grow a second competing benchmark story. Mail-specific validation can live there, while the canonical benchmark/report should live here.
-
-Near-term benchmark shape:
-
-- Phase A: pinned text benchmark slice with reportable precision/recall/F1 and over-redaction metrics
-- Phase B: vault-specific OCR / scanned-document / screenshot / bridged-mail evaluation that reflects real `llm-vault` retrieval behavior
-
 ## Safety Boundary
 
 | Surface | Intended user | Scope | Must not do |
@@ -153,7 +137,7 @@ OpenClaw has two separate surfaces here:
 - command surface: `/vault status`, `/vault search ...`, `/vault search-redacted ...`
 - tool surface: `llm_vault_status`, `llm_vault_search`
 
-The tool surface is the intended autonomous path. `llm_vault_search` remains redacted-only and safe by default for now. The slash command stays available for manual use.
+The tool surface is the intended autonomous path. `llm_vault_search` is redacted-only and safe by default. The slash command stays available for manual use.
 
 ### `openclaw.json`
 

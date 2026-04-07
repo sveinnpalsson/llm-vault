@@ -15,7 +15,7 @@ Tool surface:
 - `llm_vault_status`
 - `llm_vault_search`
 
-The tool surface is the intended autonomous path. `llm_vault_search` remains redacted-only and safe by default for now. The slash command remains available for manual use.
+The tool surface is the intended autonomous path. `llm_vault_search` is redacted-only and safe by default. The slash command remains available for manual use.
 
 ## Boundary
 
