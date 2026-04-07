@@ -39,7 +39,7 @@ Key sections:
 Runtime defaults:
 
 - summary, embedding, and model-redaction share one local default base URL: `http://127.0.0.1:8080/v1`
-- photo-analysis and PDF parse services are optional; the template ships with localhost placeholder endpoints (`127.0.0.1:18110` and `127.0.0.1:18084`) and can be explicitly disabled via `[photo_analysis].disable_service = true` / `[pdf].disable_service = true`
+- photo-analysis and PDF parse services are optional; the template ships with localhost placeholder endpoints (`127.0.0.1:8081` and `127.0.0.1:8082`) and can be explicitly disabled via `[photo_analysis].disable_service = true` / `[pdf].disable_service = true`
 - `[runtime].max` can set a default source-count cap for bounded `vault-ops update` / `repair` runs
 - `vault-ops status` reports setup warnings for common local miswires (missing DB password, missing content roots, optional service unset, non-local URLs, and unreachable configured endpoints)
 

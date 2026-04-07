@@ -60,8 +60,8 @@ Usually required for a useful setup:
 
 Optional:
 
-- a local photo-analysis service (default config points to `127.0.0.1:18110`; explicit disable supported)
-- a local PDF parse service for scanned PDFs (default config points to `127.0.0.1:18084`; explicit disable supported)
+- a local photo-analysis service (default config points to `127.0.0.1:8081`; explicit disable supported)
+- a local PDF parse service for scanned PDFs (default config points to `127.0.0.1:8082`; explicit disable supported)
 - a read-only `inbox-vault` bridge for mail
 
 ## Minimal `vault-ops.toml`
@@ -88,12 +88,20 @@ base_url = "http://127.0.0.1:8080/v1"
 model = "qwen3-14b"
 
 [photo_analysis]
-url = "http://127.0.0.1:18110/analyze"
+url = "http://127.0.0.1:8081/analyze"
 # disable_service = true
 
 [pdf]
-parse_url = "http://127.0.0.1:18084/v1/pdf/parse"
+parse_url = "http://127.0.0.1:8082/v1/pdf/parse"
 # disable_service = true
+
+[mail_bridge]
+enabled = false
+# To enable mail, point this at the local inbox-vault DB.
+db_path = "/absolute/path/to/inbox-vault/data/inbox_vault.db"
+password_env = "INBOX_VAULT_DB_PASSWORD"
+include_accounts = []
+import_summary = true
 
 [search]
 top_k = 5
@@ -104,9 +112,10 @@ Before the first real run:
 
 - add at least one `docs_roots` or `photos_roots` entry
 - point `[summary]`, `[embedding]`, `[redaction]`, `[photo_analysis]`, and `[pdf]` at reachable local endpoints (or explicitly disable optional services)
-- note: default template includes localhost placeholder endpoints for `[photo_analysis].url` and `[pdf].parse_url`; use `disable_service = true` under each section to explicitly disable
+- note: the default template includes localhost placeholder endpoints for `[photo_analysis].url` and `[pdf].parse_url`; use `disable_service = true` under each section to explicitly disable
 - create `state/` if it does not exist yet
 - export `LLM_VAULT_DB_PASSWORD`
+- if you want mail, enable `[mail_bridge]` and point `db_path` at your local `inbox-vault` database
 - run `vault-ops status` and fix any wiring warnings before long ingest runs
 
 The first `vault-ops update` initializes the encrypted registry/vector state for this checkout. A bounded first pass can leave the system usable but degraded until the remaining corpus is indexed.
@@ -121,11 +130,25 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-If mail is enabled:
+### Enabling mail via `inbox-vault`
+
+Yes, your understanding is right: `llm-vault` takes mail through the `[mail_bridge]` config block. It does not sync Gmail directly.
+
+To enable mail:
+
+1. get `inbox-vault` working locally first
+2. set `[mail_bridge].enabled = true`
+3. point `[mail_bridge].db_path` at the local `inbox-vault` SQLCipher database
+4. make sure `INBOX_VAULT_DB_PASSWORD` is exported for the same shell/runtime
+5. optionally set `include_accounts = ["you@example.com"]` to limit imported accounts
+
+Then run:
 
 ```bash
+vault-ops status
 vault-ops update --source mail
 vault-ops search "budget approval" --source mail --json
+vault-agent search-redacted "budget approval" --source mail --top-k 3
 ```
 
 ## OpenClaw Integration

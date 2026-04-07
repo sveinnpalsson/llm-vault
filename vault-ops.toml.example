@@ -27,7 +27,7 @@ model = "qwen3-14b"
 # Optional companion service.
 # Enabled by default with a local placeholder endpoint; set disable_service = true to opt out.
 # `vault-ops status` warns when non-local or unreachable.
-url = "http://127.0.0.1:18110/analyze"
+url = "http://127.0.0.1:8081/analyze"
 # timeout = 45
 # force = false
 # disable_service = false
@@ -36,12 +36,13 @@ url = "http://127.0.0.1:18110/analyze"
 # Optional companion service.
 # Enabled by default with a local placeholder endpoint; set disable_service = true to opt out.
 # `vault-ops status` warns when non-local or unreachable.
-parse_url = "http://127.0.0.1:18084/v1/pdf/parse"
+parse_url = "http://127.0.0.1:8082/v1/pdf/parse"
 # timeout = 600
 # profile = "auto"
 # disable_service = false
 
 [mail_bridge]
+# To enable mail, point db_path at the local inbox-vault SQLCipher DB.
 enabled = false
 db_path = ""
 password_env = "INBOX_VAULT_DB_PASSWORD"
