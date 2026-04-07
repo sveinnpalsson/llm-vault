@@ -41,7 +41,6 @@ def test_shell_scripts_are_executable() -> None:
     script_paths = list(Path("scripts").glob("*.sh")) + [
         Path("vault-agent"),
         Path("vault-ops"),
-        Path("skills/vault-unified-local/scripts/vault-unified-cli.sh"),
     ]
     for path in script_paths:
         mode = path.stat().st_mode

@@ -224,7 +224,6 @@ If the agent already uses `tools.allow`, add the same tool names there instead o
 - [Manual OpenClaw validation checklist](docs/manual-openclaw-agent-validation.md)
 - [Infrastructure stack and config shape](docs/infrastructure-stack.md)
 - [Redaction evaluation ownership and plan](docs/redaction-evaluation.md)
-- [Unified local skill](skills/vault-unified-local)
 
 ## Status
 

@@ -16,6 +16,4 @@
 
 ## Release operations
 
-1. Keep unified skill mirror parity with `inbox-vault`.
-2. Run unified-skill sync checks before any release.
-3. Keep security review docs updated whenever trust boundaries or endpoint policy changes.
+1. Keep security review docs updated whenever trust boundaries or endpoint policy changes.
