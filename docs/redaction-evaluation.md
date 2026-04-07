@@ -45,7 +45,24 @@ Add `llm-vault`-specific evaluation that reflects how the product actually behav
 - bridged mail records
 - retrieval usefulness after redaction, not just span masking quality
 
-## Implementation stance
+## Division of work
+
+### `llm-vault` should own now
+
+- the written redaction contract
+- benchmark harness code and benchmark fixtures
+- reportable quality metrics and release-facing claims
+- cross-modality validation across docs, OCR-heavy photos, screenshots, and bridged mail retrieval
+- the decision about what counts as safe redacted retrieval for agent-facing use
+
+### `inbox-vault` should own now
+
+- mail-specific operational validation
+- bridge-contract validation into `llm-vault`
+- mail-specific failure examples that should be added to the canonical benchmark later
+- mail-side implementation changes needed to stay compatible with the shared contract
+
+### What should wait
 
 Do not extract a shared library first.
 
@@ -57,3 +74,11 @@ First align:
 4. the quality bar
 
 Only after that should we decide whether the redaction implementation should stay duplicated, be vendored, or move into a shared internal module.
+
+## Suggested execution order
+
+1. Write a small benchmark spec in this repo that names the first dataset slice, metrics, and expected outputs.
+2. Build the Phase A text harness here and produce one baseline report.
+3. Add Phase B vault-specific evaluation here for OCR-heavy docs/photos/mail retrieval behavior.
+4. Add only mail-specific validation hooks in `inbox-vault`, pointing back to this benchmark contract.
+5. Revisit code-sharing only after the benchmark and contract stabilize.
