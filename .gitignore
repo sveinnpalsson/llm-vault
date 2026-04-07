@@ -24,6 +24,9 @@ tmp-*/
 *.tmp
 *.bak
 
+# Local benchmark inputs
+local/benchmark-data/
+
 # Local fixture corpora
 test_docs_photos/
 

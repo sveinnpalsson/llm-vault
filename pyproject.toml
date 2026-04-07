@@ -18,10 +18,12 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 [project.scripts]
 vault-ops = "vault_ops_cli:main"
 vault-agent = "vault_agent_cli:main"
+redaction-eval = "redaction_eval_harness:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
 py-modules = [
+  "redaction_eval_harness",
   "inspect_random_rows",
   "vault_agent_cli",
   "vault_db",

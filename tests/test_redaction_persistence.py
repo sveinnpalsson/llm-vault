@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import urllib.error
 from pathlib import Path
 
 from vault_db import connect_vault_db
@@ -31,6 +33,7 @@ def test_redaction_placeholder_reuse_across_chunks() -> None:
     assert out.items_redacted >= 2
     assert out.entries_total >= 2
     assert len(out.inserted_entries) >= 2
+    assert out.candidate_sources["regex"] >= 2
 
     first = out.chunk_text_redacted[0]
     second = out.chunk_text_redacted[1]
@@ -133,6 +136,130 @@ def test_hybrid_redaction_filters_weak_model_candidates(monkeypatch) -> None:
     assert any(entry["original_value"] == "Amy Doe" for entry in out.inserted_entries)
     assert all(entry["original_value"] != "LAST NAME" for entry in out.inserted_entries)
     assert all(entry["original_value"] != "CA" for entry in out.inserted_entries)
+    assert out.candidate_sources["llm_chunk"] == 3
+
+
+def test_model_detect_candidates_disables_thinking_for_local_qwen(monkeypatch) -> None:
+    from vault_redaction import _model_detect_candidates
+
+    captured_payloads: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_urlopen(req, timeout):  # noqa: ANN001
+        captured_payloads.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "redactions": [
+                                        {
+                                            "key_name": "ADDRESS",
+                                            "values": ["44 West 81st Street, Apt 5B, New York, NY 10024"],
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    candidates = _model_detect_candidates(
+        "Ship the reimbursement packet to 44 West 81st Street, Apt 5B, New York, NY 10024.",
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+        source="llm_chunk",
+    )
+
+    assert [candidate.value for candidate in candidates] == [
+        "44 West 81st Street, Apt 5B, New York, NY 10024"
+    ]
+    assert captured_payloads[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured_payloads[0]["response_format"] == {"type": "json_object"}
+
+
+def test_model_detect_candidates_retries_without_response_format_then_template_kwargs(monkeypatch) -> None:
+    from vault_redaction import _model_detect_candidates
+
+    captured_payloads: list[dict] = []
+    calls = 0
+
+    class FakeResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_http_error(req, timeout):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        payload = json.loads(req.data.decode("utf-8"))
+        captured_payloads.append(payload)
+        if calls < 3:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                400,
+                "bad request",
+                hdrs=None,
+                fp=None,
+            )
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "redactions": [
+                                        {"key_name": "EMAIL", "values": ["jane.doe@example.com"]}
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_http_error)
+
+    candidates = _model_detect_candidates(
+        "Send confirmation to jane.doe@example.com.",
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+        source="llm_chunk",
+    )
+
+    assert [candidate.value for candidate in candidates] == ["jane.doe@example.com"]
+    assert "response_format" in captured_payloads[0]
+    assert "chat_template_kwargs" in captured_payloads[0]
+    assert "response_format" not in captured_payloads[1]
+    assert "chat_template_kwargs" in captured_payloads[1]
+    assert "response_format" not in captured_payloads[2]
+    assert "chat_template_kwargs" not in captured_payloads[2]
 
 
 def test_labeled_account_detection_beats_phone_detection() -> None:

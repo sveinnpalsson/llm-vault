@@ -2,6 +2,8 @@
 
 `llm-vault` is the canonical home for the shared redaction contract and benchmark story across docs, photos, and bridged mail.
 
+The release-readable benchmark entrypoint now lives at [`eval/redaction/README.md`](../eval/redaction/README.md). That subdirectory owns the repo-visible fixtures, tracked summary artifacts, and the exact local compare commands for the current redaction benchmark surface.
+
 ## Why this repo owns it
 
 `llm-vault` is where the strongest public claim lives: safe, redacted retrieval across docs, photos, and bridged mail through one local-first retrieval layer. Because of that, this repo should own:

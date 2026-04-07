@@ -9,6 +9,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from redaction_eval_harness import load_eval_cases, run_eval_cases
+from vault_redaction import RedactionConfig
 from vault_service_defaults import DEFAULT_LOCAL_MODEL_BASE_URL
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,3 +130,35 @@ def test_live_summary_smoke_two_calls_max() -> None:
             pytest.skip("summary endpoint unavailable")
         choices = payload.get("choices")
         assert isinstance(choices, list) and len(choices) >= 1
+
+
+@pytest.mark.live_llm
+def test_live_redaction_eval_hybrid_smoke_one_case() -> None:
+    if not _enabled():
+        pytest.skip("set LLM_VAULT_RUN_LIVE_SMOKE=1 to enable")
+
+    base = str(os.getenv("VAULT_REDACTION_BASE_URL", DEFAULT_LOCAL_MODEL_BASE_URL)).strip().rstrip("/")
+    model = str(os.getenv("VAULT_REDACTION_MODEL", "qwen3-14b")).strip()
+    if not _is_local_url(base):
+        pytest.skip("live smoke enforces local-only endpoints")
+
+    fixture = ROOT / "eval" / "redaction" / "fixtures" / "redaction_eval_hybrid_smoke.jsonl"
+    case = load_eval_cases(fixture)[0]
+    try:
+        report = run_eval_cases(
+            [case],
+            cfg=RedactionConfig(
+                mode="hybrid",
+                enabled=True,
+                base_url=base,
+                model=model,
+                api_key=str(os.getenv("VAULT_REDACTION_API_KEY", "local")).strip() or "local",
+            ),
+            fixture_path=fixture,
+        )
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+        pytest.skip("redaction endpoint unavailable")
+
+    assert report.summary.llm_candidate_cases >= 1
+    assert report.summary.llm_candidates_total >= 1
+    assert report.cases[0].candidate_sources.get("llm_chunk", 0) >= 1

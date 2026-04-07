@@ -9,11 +9,13 @@ TRACKED_RELEASE_PATHS = (
     "README.md",
     "TODO.md",
     "docs",
+    "eval",
     "plugins",
     "scripts",
     "skills",
     "tests",
     "pyproject.toml",
+    "redaction-eval",
     "vault-agent",
     "vault-ops",
     "vault-ops.toml.example",
@@ -39,6 +41,7 @@ def test_gitignore_covers_runtime_artifacts() -> None:
 
 def test_shell_scripts_are_executable() -> None:
     script_paths = list(Path("scripts").glob("*.sh")) + [
+        Path("redaction-eval"),
         Path("vault-agent"),
         Path("vault-ops"),
     ]

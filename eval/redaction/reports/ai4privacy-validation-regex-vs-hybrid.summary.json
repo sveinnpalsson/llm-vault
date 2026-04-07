@@ -1,0 +1,109 @@
+{
+  "dataset": {
+    "name": "ai4privacy/pii-masking-300k",
+    "split": "validation",
+    "fixture_path": "tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl",
+    "report_path": "tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json",
+    "operator_prepared_fixture": true,
+    "tracked_summary_only": true
+  },
+  "redaction": {
+    "base_url": "http://127.0.0.1:18080/v1",
+    "config_path": "vault-ops.toml",
+    "model": "qwen3-14b",
+    "profile": "standard",
+    "timeout_seconds": 45
+  },
+  "runs": [
+    {
+      "mode": "regex",
+      "summary": {
+        "candidate_sources": {
+          "regex": 1046
+        },
+        "cases_total": 1065,
+        "cases_with_mismatch": 1000,
+        "f1": 0.2639751552795031,
+        "f2": 0.1914953534215714,
+        "fn": 3521,
+        "fp": 271,
+        "leakage_rate": 3.3061032863849764,
+        "llm_candidate_cases": 0,
+        "llm_candidates_total": 0,
+        "over_redaction_rate": 0.2544600938967136,
+        "precision": 0.7150368033648791,
+        "recall": 0.16186622232801715,
+        "tp": 680
+      },
+      "weak_categories": {
+        "missing_placeholders_top": [
+          {"key": "ACCOUNT", "count": 1388},
+          {"key": "ADDRESS", "count": 777},
+          {"key": "CUSTOM", "count": 751},
+          {"key": "PERSON", "count": 391},
+          {"key": "PHONE", "count": 191},
+          {"key": "EMAIL", "count": 23}
+        ],
+        "unexpected_placeholders_top": [
+          {"key": "PHONE", "count": 246},
+          {"key": "PERSON", "count": 13},
+          {"key": "EMAIL", "count": 12}
+        ]
+      }
+    },
+    {
+      "mode": "hybrid",
+      "summary": {
+        "candidate_sources": {
+          "llm_chunk": 1775,
+          "regex": 1046
+        },
+        "cases_total": 1065,
+        "cases_with_mismatch": 923,
+        "f1": 0.46385345109584564,
+        "f2": 0.37880002137094626,
+        "fn": 2783,
+        "fp": 495,
+        "leakage_rate": 2.613145539906103,
+        "llm_candidate_cases": 676,
+        "llm_candidates_total": 1775,
+        "over_redaction_rate": 0.4647887323943662,
+        "precision": 0.7412441191845269,
+        "recall": 0.33753868126636516,
+        "tp": 1418
+      },
+      "weak_categories": {
+        "missing_placeholders_top": [
+          {"key": "ACCOUNT", "count": 901},
+          {"key": "CUSTOM", "count": 751},
+          {"key": "ADDRESS", "count": 704},
+          {"key": "PERSON", "count": 346},
+          {"key": "PHONE", "count": 58},
+          {"key": "EMAIL", "count": 23}
+        ],
+        "unexpected_placeholders_top": [
+          {"key": "PHONE", "count": 264},
+          {"key": "PERSON", "count": 126},
+          {"key": "ACCOUNT", "count": 88},
+          {"key": "EMAIL", "count": 12},
+          {"key": "ADDRESS", "count": 5}
+        ]
+      }
+    }
+  ],
+  "comparison": {
+    "baseline_mode": "regex",
+    "deltas": [
+      {
+        "baseline_mode": "regex",
+        "f1_delta": 0.19987829581634253,
+        "f2_delta": 0.18730466794937486,
+        "llm_candidates_delta": 1775,
+        "mismatch_delta": -77,
+        "mode": "hybrid",
+        "precision_delta": 0.02620731581964786,
+        "recall_delta": 0.17567245893834801
+      }
+    ]
+  }
+}

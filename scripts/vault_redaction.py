@@ -7,6 +7,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -233,6 +234,7 @@ class RedactionRunResult:
     inserted_entries: list[dict[str, str]]
     entries_total: int
     items_redacted: int
+    candidate_sources: dict[str, int]
 
 
 @dataclass(slots=True)
@@ -696,6 +698,9 @@ def _model_detect_candidates(
         "temperature": 0.0,
         "max_tokens": 600,
         "response_format": {"type": "json_object"},
+        # Match the local llama.cpp/Qwen setup by disabling thinking so JSON
+        # lands in message.content instead of reasoning-specific fields.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if cfg.api_key:
@@ -718,8 +723,21 @@ def _model_detect_candidates(
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req2, timeout=max(1, int(cfg.timeout_seconds))) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                with urllib.request.urlopen(req2, timeout=max(1, int(cfg.timeout_seconds))) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as exc2:
+                if exc2.code != 400:
+                    return []
+                payload.pop("chat_template_kwargs", None)
+                req3 = urllib.request.Request(
+                    f"{cfg.base_url.rstrip('/')}/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(req3, timeout=max(1, int(cfg.timeout_seconds))) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
         else:
             return []
     except Exception:
@@ -792,8 +810,11 @@ def redact_chunks_with_persistent_map(
 
     inserted_entries: list[dict[str, str]] = []
     redacted_items = 0
+    candidate_sources: Counter[str] = Counter()
 
     def _register(candidates: list[RedactionCandidate]):
+        for cand in candidates:
+            candidate_sources[str(cand.source or "unknown")] += 1
         for cand in candidates:
             placeholder, value_norm, is_new = table.register(cand.key_name, cand.value)
             if placeholder and is_new:
@@ -832,4 +853,5 @@ def redact_chunks_with_persistent_map(
         inserted_entries=inserted_entries,
         entries_total=len(table.value_to_placeholder),
         items_redacted=redacted_items,
+        candidate_sources=dict(sorted(candidate_sources.items())),
     )

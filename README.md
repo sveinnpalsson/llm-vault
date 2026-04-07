@@ -14,7 +14,9 @@ Privacy-first local vault for personal documents, photos, and mail-derived metad
 
 Use this repo when you want local retrieval over private content without handing raw data to a hosted SaaS toolchain. `llm-vault` expects your model and parsing stack to stay local: local OpenAI-compatible endpoints for summaries, embeddings, and redaction, plus optional local services for photo analysis and scanned-PDF parsing.
 
-This repo is installable from a checkout with `pip install -e .[dev]`. The OpenClaw integration in this repo is a repo-local plugin package, not a published standalone plugin release.
+This repo is installable from a checkout with `pip install -e .[dev]`. That editable install exposes `vault-ops`, `vault-agent`, and `redaction-eval`. The OpenClaw integration in this repo is a repo-local plugin package, not a published standalone plugin release.
+
+The release-readable redaction benchmark surface lives under [`eval/redaction/`](eval/redaction/README.md). It keeps the current local compare commands, tracked summary artifacts, and the repo-owned seed fixtures in one place without checking the large raw benchmark outputs into git.
 
 ## Safety Boundary
 
@@ -223,6 +225,7 @@ If the agent already uses `tools.allow`, add the same tool names there instead o
 - [OpenClaw plugin contract](docs/openclaw-plugin.md)
 - [Manual OpenClaw validation checklist](docs/manual-openclaw-agent-validation.md)
 - [Infrastructure stack and config shape](docs/infrastructure-stack.md)
+- [Redaction evaluation surface](eval/redaction/README.md)
 - [Redaction evaluation ownership and plan](docs/redaction-evaluation.md)
 
 ## Status

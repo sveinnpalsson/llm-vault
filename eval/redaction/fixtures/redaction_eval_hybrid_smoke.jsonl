@@ -1,0 +1,1 @@
+{"case_id":"docs-address-email","source_type":"docs","text":"Ship the reimbursement packet to 44 West 81st Street, Apt 5B, New York, NY 10024. Send confirmation to jane.doe@example.com.","expected_redacted_text":"Ship the reimbursement packet to <REDACTED_ADDRESS_A>. Send confirmation to <REDACTED_EMAIL_A>.","expected_placeholders":["ADDRESS","EMAIL"]}
