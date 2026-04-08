@@ -1,6 +1,6 @@
 # llm-vault
 
-Privacy-first local vault for personal documents, photos, and mail-derived metadata.
+Privacy-first local vault for personal documents, photos, and mail.
 
 `llm-vault` builds an encrypted local registry and vector index over local content, then exposes:
 
@@ -26,13 +26,20 @@ A public-facing redaction results page lives under [`eval/redaction/`](eval/reda
 
 ## Safety Boundary
 
-| Surface | Intended user | Scope | Must not do |
-| --- | --- | --- | --- |
-| `vault-ops` | operator | `status`, `update`, `repair`, `upgrade`, unrestricted maintenance | agent-safe execution, redacted-only guarantees |
-| `vault-agent` | local agent | `status`, `search-redacted` | indexing, repair, upgrade, clearance/config override |
-| `plugins/llm-vault-openclaw` | OpenClaw | `/vault ...` command wrapper plus explicit agent tools | call `vault-ops`, expose unredacted search |
+`llm-vault` has two interfaces:
 
-`vault-ops` remains operator-only. The OpenClaw plugin shells only into `vault-agent`, and every search path stays backed by `vault-agent search-redacted`.
+- `vault-ops` is the operator interface. Use it for indexing, repair, upgrade, maintenance, and other unrestricted admin work.
+- `vault-agent` is the safe agent interface. Use it for status checks and redacted search only.
+
+The OpenClaw plugin is simply the OpenClaw wrapper around `vault-agent`. The plugin allows sandboxed agents without the "exec" tool to still have access to the vault cli. This means it can read redacted private data without being able to request the non-redacted versions. 
+
+That means the boundary is:
+
+- `vault-ops` is operator-only
+- `vault-agent` is the safe redacted interface
+- the OpenClaw plugin only exposes that same `vault-agent` surface inside OpenClaw
+
+So an autonomous agent should use `vault-agent` or the OpenClaw plugin tools, and should not be given direct `vault-ops` access.
 
 ## Local Install
 
@@ -58,18 +65,13 @@ At minimum:
 
 - `LLM_VAULT_DB_PASSWORD`
 - at least one docs root or photos root
-- local model access for embeddings and redaction
-
-Usually helpful:
-
-- a local summary model
-- `pdftotext` for native-text PDFs
+- local model access for embeddings and chat-completion (for redaction and summarization)
 
 Optional:
 
 - a local photo-analysis service
-- a local PDF parsing service for scanned documents
-- a read-only `inbox-vault` bridge for mail
+- a local PDF parsing service for documents
+- `inbox-vault` bridge for gmail
 
 ## Example `vault-ops.toml`
 
@@ -139,7 +141,7 @@ vault-agent search-redacted "tax receipt" --source docs --top-k 3
 
 ### Enabling mail via `inbox-vault`
 
-Yes, your understanding is right: `llm-vault` takes mail through the `[mail_bridge]` config block. It does not sync Gmail directly.
+`llm-vault` does not sync Gmail directly. Mail is made available through the optional `[mail_bridge]` section, which reads from a local `inbox-vault` database.
 
 To enable mail:
 
