@@ -1,22 +1,22 @@
 # Redaction Evaluation
 
-This directory is the release-readable benchmark surface for the current `llm-vault` redaction pipeline.
+This directory holds the current benchmark results and runner for the `llm-vault` redaction pipeline.
 
-What is tracked here:
+Tracked here:
 
-- repo-owned seed fixtures for deterministic smoke coverage: [`fixtures/redaction_eval_phase_a.jsonl`](fixtures/redaction_eval_phase_a.jsonl) and [`fixtures/redaction_eval_hybrid_smoke.jsonl`](fixtures/redaction_eval_hybrid_smoke.jsonl)
+- small checked-in fixtures for quick benchmark checks: [`fixtures/redaction_eval_phase_a.jsonl`](fixtures/redaction_eval_phase_a.jsonl) and [`fixtures/redaction_eval_hybrid_smoke.jsonl`](fixtures/redaction_eval_hybrid_smoke.jsonl)
 - tracked summary artifacts derived from the latest local full compares:
   [`reports/ai4privacy-validation-regex-vs-hybrid.summary.json`](reports/ai4privacy-validation-regex-vs-hybrid.summary.json)
   and [`reports/ai4privacy-train-regex-vs-hybrid.summary.json`](reports/ai4privacy-train-regex-vs-hybrid.summary.json)
 - the runnable harness entrypoint: `./redaction-eval` or the installed `redaction-eval` console script
 
-What is intentionally not tracked here:
+Not tracked here:
 
 - the downloaded public dataset
 - the large prepared validation/train fixtures under `tmp/redaction-eval/fixtures/`
 - the large raw per-case compare outputs under `tmp/redaction-eval/reports/`
 
-Those remain local/operator-run only and are kept out of git by `.gitignore`.
+Those stay local and are kept out of git by `.gitignore`.
 
 ## What Was Benchmarked
 
@@ -25,14 +25,14 @@ Current full compares use operator-prepared local fixtures derived from the Engl
 - `regex`
 - `hybrid`
 
-The committed repo-owned fixtures in this directory are smaller smoke fixtures. The full validation/train fixtures remain local-only:
+The committed fixtures in this directory are small quick-check fixtures. The full validation/train fixtures remain local-only:
 
 - `tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl`
 - `tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl`
 
 ## Exact Reproduction Commands
 
-Repo-owned seed smoke:
+Small regex sanity check:
 
 ```bash
 mkdir -p tmp/redaction-eval/reports
@@ -42,7 +42,7 @@ mkdir -p tmp/redaction-eval/reports
   --output tmp/redaction-eval/reports/seed-regex.json
 ```
 
-Hybrid smoke that requires model-backed candidates:
+Small hybrid check that requires model-backed candidates:
 
 ```bash
 mkdir -p tmp/redaction-eval/reports
@@ -88,16 +88,16 @@ The harness writes append-only checkpoint sidecars beside `--output` and automat
 
 ## Current Results
 
-Tested setup from the tracked summary artifacts: `vault-ops.toml`, `http://127.0.0.1:18080/v1`, model `qwen3-14b`, profile `standard`, timeout `45s`. These numbers are for that local setup.
+These runs compare `regex` against `hybrid`. The hybrid run used `qwen3-14b` for model-backed detection.
 
-### Hybrid vs. Regex Delta
+### At a Glance
 
-| Split | Precision | Recall | F1 | F2 | Mismatches |
+| Split | Precision | Recall | F1 | F2 | Fewer mismatches |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Validation | +0.0262 | +0.1757 | +0.1999 | +0.1873 | -77 |
-| Train | +0.0294 | +0.1665 | +0.1925 | +0.1784 | -288 |
+| Validation | +0.0262 | +0.1757 | +0.1999 | +0.1873 | 77 fewer |
+| Train | +0.0294 | +0.1665 | +0.1925 | +0.1784 | 288 fewer |
 
-### Absolute Metrics
+### Full Comparison
 
 | Split | Mode | Precision | Recall | F1 | F2 |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -106,26 +106,28 @@ Tested setup from the tracked summary artifacts: `vault-ops.toml`, `http://127.0
 | Train | `regex` | 0.7039 | 0.1564 | 0.2559 | 0.1852 |
 | Train | `hybrid` | 0.7333 | 0.3229 | 0.4484 | 0.3636 |
 
-### Leak Framing on the Hybrid Run
+### What the Hybrid Run Still Missed
 
-| Split | Expected placeholders | Correctly redacted | Leaked | Unexpected |
+| Split | Should have been redacted | Redacted with the expected label | Still leaked | Unexpected redactions |
 | --- | ---: | ---: | ---: | ---: |
 | Validation | 4201 | 1418 | 2783 | 495 |
 | Train | 16148 | 5214 | 10934 | 1896 |
 
-On both tracked splits, `hybrid` materially improves recall and F-scores over `regex`, but it still leaves a large number of expected placeholders unredacted.
+Here, **"redacted with the expected label"** means the system both hid the value and assigned the expected placeholder category in this benchmark. If something was hidden but labeled as the wrong category, it does **not** count as "still leaked," but it does show up under **unexpected redactions** because the label was wrong.
 
-The exact per-run summaries and weak-category counts are captured in the tracked JSON summaries in [`reports/`](reports).
+Hybrid is clearly better than regex, mainly because it catches more of what should be hidden. But the current system still misses a large amount of sensitive material on this benchmark, so these numbers should be read as progress, not finish-line quality.
 
-## Current Weak Categories
+The exact per-run summaries are tracked in [`reports/`](reports).
 
-Across both full splits, the main remaining weak areas are concentrated and visible:
+## Where It Still Struggles
 
-- `ACCOUNT` is still the largest remaining miss bucket after hybrid: `901` missing on validation and `3353` on train.
-- `CUSTOM` remains effectively unimproved by hybrid on these local compares: `751` missing on validation and `3061` on train in both modes.
-- `ADDRESS` improves only modestly relative to regex: `777 -> 704` missing on validation and `3296 -> 2954` on train.
-- `PERSON` still misses often: `346` missing on validation and `1273` on train after hybrid.
-- Over-redaction pressure is concentrated in `PHONE`, then `ACCOUNT` and `PERSON`: validation hybrid unexpected counts are `PHONE=264`, `PERSON=126`, `ACCOUNT=88`; train hybrid unexpected counts are `PHONE=1029`, `ACCOUNT=437`, `PERSON=304`.
+Across both full splits, the biggest remaining weak spots are:
+
+- **Account and ID-like fields** remain the largest miss bucket.
+- **Custom handles and usernames** improve very little under hybrid.
+- **Addresses** improve, but still leak too often.
+- **Person names** still miss often enough to matter.
+- **Phone numbers** are the biggest over-redaction bucket.
 
 ## Scope
 

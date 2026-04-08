@@ -12,17 +12,17 @@ Privacy-first local vault for personal documents, photos, and mail-derived metad
 
 ## Overview
 
-Use this repo when you want local retrieval over private content without handing raw data to a hosted SaaS toolchain. `llm-vault` expects your model and parsing stack to stay local: local OpenAI-compatible endpoints for summaries, embeddings, and redaction, plus optional local services for photo analysis and scanned-PDF parsing.
+Use this repo when you want local retrieval over private content without handing raw documents, photos, or mail-derived data to a hosted SaaS toolchain. `llm-vault` is built for a local setup: your storage stays encrypted on your machine, and your retrieval pipeline runs against services you control.
 
 This repo is installable from a checkout with `pip install -e .[dev]`. That editable install exposes `vault-ops`, `vault-agent`, and `redaction-eval`. The OpenClaw integration in this repo is a repo-local plugin package, not a published standalone plugin release.
 
 ## Recommended Local Stack
 
-The diagram below shows a practical local compute stack for `llm-vault`, including recommended models and companion tools that work well for a home setup on consumer GPUs. See [Infrastructure stack and config shape](docs/infrastructure-stack.md) for the full config shape and local service contracts behind it.
+The diagram below shows the kind of local stack this project is designed for. If you want the deeper implementation notes, model choices, and service layout, see [Infrastructure stack](docs/infrastructure-stack.md).
 
 ![llm-vault local stack pipeline](assets/pipeline-figure.png)
 
-The release-readable redaction benchmark surface lives under [`eval/redaction/`](eval/redaction/README.md). It keeps the current local compare commands, tracked summary artifacts, and the repo-owned seed fixtures in one place without checking the large raw benchmark outputs into git.
+A public-facing redaction results page lives under [`eval/redaction/`](eval/redaction/README.md). It summarizes what the current redaction engine catches, what it still misses, and how to rerun the benchmark.
 
 ## Safety Boundary
 
@@ -52,29 +52,28 @@ vault-ops status
 
 `pip install -e .` exposes installable `vault-ops` and `vault-agent` entry points from the checkout. The repo-root `./vault-ops` and `./vault-agent` wrappers remain compatibility shims.
 
-## Required Inputs
+## What You Need
 
-Required for a real setup:
+At minimum:
 
 - `LLM_VAULT_DB_PASSWORD`
-- at least one docs root or photos root in `vault-ops.toml`
-- a local embedding endpoint
-- a local redaction path
+- at least one docs root or photos root
+- local model access for embeddings and redaction
 
-Usually required for a useful setup:
+Usually helpful:
 
-- a local summary endpoint
+- a local summary model
 - `pdftotext` for native-text PDFs
 
 Optional:
 
-- a local photo-analysis service (default config points to `127.0.0.1:8081`; explicit disable supported)
-- a local PDF parse service for scanned PDFs (default config points to `127.0.0.1:8082`; explicit disable supported)
+- a local photo-analysis service
+- a local PDF parsing service for scanned documents
 - a read-only `inbox-vault` bridge for mail
 
-## Minimal `vault-ops.toml`
+## Example `vault-ops.toml`
 
-Start from [`vault-ops.toml.example`](vault-ops.toml.example) and point it at the local services you actually run:
+Start from [`vault-ops.toml.example`](vault-ops.toml.example) and adjust it for the services you actually run:
 
 ```toml
 [paths]
@@ -119,8 +118,8 @@ search_level = "auto"
 Before the first real run:
 
 - add at least one `docs_roots` or `photos_roots` entry
-- point `[summary]`, `[embedding]`, `[redaction]`, `[photo_analysis]`, and `[pdf]` at reachable local endpoints (or explicitly disable optional services)
-- note: the default template includes localhost placeholder endpoints for `[photo_analysis].url` and `[pdf].parse_url`; use `disable_service = true` under each section to explicitly disable
+- point the model sections at working local services
+- explicitly disable any optional services you are not running
 - create `state/` if it does not exist yet
 - export `LLM_VAULT_DB_PASSWORD`
 - if you want mail, enable `[mail_bridge]` and point `db_path` at your local `inbox-vault` database
