@@ -1,98 +1,177 @@
 # Redaction Evaluation
 
-This directory holds the current benchmark results and runner for the `llm-vault` redaction pipeline.
+Redaction is a core part of `llm-vault`. If the system fails to hide sensitive information reliably, retrieval quality does not matter. This directory contains the redaction evaluation code and the current checked-in result summaries.
 
-Tracked here:
+The goal of this evaluation work is straightforward:
 
-- small checked-in fixtures for quick benchmark checks: [`fixtures/redaction_eval_phase_a.jsonl`](fixtures/redaction_eval_phase_a.jsonl) and [`fixtures/redaction_eval_hybrid_smoke.jsonl`](fixtures/redaction_eval_hybrid_smoke.jsonl)
-- tracked summary artifacts derived from the latest local full compares:
-  [`reports/ai4privacy-validation-regex-vs-hybrid.summary.json`](reports/ai4privacy-validation-regex-vs-hybrid.summary.json)
-  and [`reports/ai4privacy-train-regex-vs-hybrid.summary.json`](reports/ai4privacy-train-regex-vs-hybrid.summary.json)
-- the runnable harness entrypoint: `./redaction-eval` or the installed `redaction-eval` console script
+- measure how well the redaction system hides sensitive content
+- measure how often it hides the **right kind** of content
+- measure the tradeoff between missed redactions and over-redaction
+- make it easy to compare a simple baseline (`regex`) against model-assisted redaction (`hybrid`)
 
-Not tracked here:
+At the moment, the checked-in model-backed results use **`qwen3-14b`** in hybrid mode.
 
-- the downloaded public dataset
-- the large prepared validation/train fixtures under `tmp/redaction-eval/fixtures/`
-- the large raw per-case compare outputs under `tmp/redaction-eval/reports/`
+## Method
 
-Those stay local and are kept out of git by `.gitignore`.
+The current full comparisons use locally prepared fixtures derived from the public AI4Privacy dataset:
 
-## What Was Benchmarked
+- dataset: [`ai4privacy/pii-masking-300k`](https://huggingface.co/datasets/ai4privacy/pii-masking-300k)
+- splits used here: validation and train
+- modes compared: `regex` and `hybrid`
 
-Current full compares use operator-prepared local fixtures derived from the English split of `ai4privacy/pii-masking-300k` and score placeholder-key output from the existing `llm-vault` redaction pipeline in two modes:
+We report the benchmark in two ways.
 
-- `regex`
-- `hybrid`
+### 1) Label-aware scoring
 
-The committed fixtures in this directory are small quick-check fixtures. The full validation/train fixtures remain local-only:
+This is the strict view. A case only counts as fully correct when the sensitive value is hidden **with the expected placeholder label**.
 
-- `tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl`
-- `tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl`
+This view is useful when operators care about the exact class of redaction, not just whether something disappeared from the text.
 
-Prepared AI4Privacy fixtures now carry exact expected source spans from `privacy_mask`. The harness uses those stored spans for binary hide-vs-leak scoring, so real prepared fixtures do not depend on reverse-aligning the expected redacted text back onto the source text.
+Reported metrics:
 
-## Exact Reproduction Commands
+- precision
+- recall
+- F1
+- F2
 
-Small regex sanity check:
+### 2) Binary hide-vs-visible scoring
+
+This is the simpler privacy view. It asks whether the sensitive value was hidden at all, regardless of whether the placeholder label was exactly right.
+
+This view is useful when operators mainly care about leakage and are willing to tolerate some label mistakes if the underlying value is still hidden.
+
+Reported counts:
+
+- **Hidden any label**: expected sensitive values that were hidden by some placeholder
+- **Still visible**: expected sensitive values that remained visible
+- **Hidden under the wrong label**: values that were hidden, but classified under the wrong placeholder type
+- **Over-redacted**: redaction spans that do not overlap an expected sensitive span
+- **Hide rate**: hidden values divided by expected sensitive values
+
+
+## Current Results
+
+The current checked-in full results compare `regex` against `hybrid` on both validation and train.
+
+### Label-aware results
+
+| Split | Mode | Precision | Recall | F1 | F2 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Validation | Regex | 0.7150 | 0.1619 | 0.2640 | 0.1915 |
+| Validation | Hybrid | 0.7412 | 0.3375 | 0.4639 | 0.3788 |
+| Train | Regex | 0.7039 | 0.1564 | 0.2559 | 0.1852 |
+| Train | Hybrid | 0.7333 | 0.3229 | 0.4484 | 0.3636 |
+
+### Binary results
+
+| Split | Mode | Hidden any label | Still visible | Hidden under wrong label | Over-redacted | Hide rate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Validation | Regex | 929 | 3272 | 314 | 50 | 0.2211 |
+| Validation | Hybrid | 1952 | 2249 | 471 | 135 | 0.4647 |
+| Train | Regex | 3553 | 12595 | 1374 | 170 | 0.2200 |
+| Train | Hybrid | 7625 | 8523 | 2016 | 429 | 0.4722 |
+
+## Summary
+
+The short version is:
+
+- **Hybrid is clearly better than regex**.
+- The biggest gain is in **recall** and **binary hide rate**.
+- Hybrid hides much more sensitive content than regex.
+- Even so, the current system is **not close to privacy-complete** on this benchmark.
+
+Validation:
+
+- F1 improves from **0.2640** to **0.4639**
+- Recall improves from **0.1619** to **0.3375**
+- Hide rate improves from **0.2211** to **0.4647**
+- Visible leaks drop from **3272** to **2249**
+
+Train:
+
+- F1 improves from **0.2559** to **0.4484**
+- Recall improves from **0.1564** to **0.3229**
+- Hide rate improves from **0.2200** to **0.4722**
+- Visible leaks drop from **12595** to **8523**
+
+That is meaningful progress, but it still leaves a large amount of sensitive content visible.
+
+## Where the system still struggles
+
+The main weak spots are consistent across the full runs:
+
+- **Account and ID-like fields** remain the largest miss bucket.
+- **Custom handles and usernames** improve very little.
+- **Addresses** improve, but still leak too often.
+- **Person names** still miss often enough to matter.
+- **Phone numbers** are the biggest source of over-redaction.
+
+So the current story is not “problem solved.” It is:
+
+- regex is too weak
+- hybrid is materially better
+- hybrid still leaks too much to be treated as a finished privacy solution
+
+## Running the benchmark yourself
+
+From the repo root:
+
+### 1) Install the local command
 
 ```bash
-mkdir -p tmp/redaction-eval/reports
-./redaction-eval \
-  --fixture eval/redaction/fixtures/redaction_eval_phase_a.jsonl \
-  --mode regex \
-  --output tmp/redaction-eval/reports/seed-regex.json
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .[dev]
 ```
 
-Small hybrid check that requires model-backed candidates:
+### 2) Put the AI4Privacy dataset in a local folder
 
-```bash
-mkdir -p tmp/redaction-eval/reports
-./redaction-eval \
-  --fixture eval/redaction/fixtures/redaction_eval_hybrid_smoke.jsonl \
-  --compare-mode regex \
-  --compare-mode hybrid \
-  --config vault-ops.toml \
-  --require-llm-candidates \
-  --output tmp/redaction-eval/reports/hybrid-smoke-regex-vs-hybrid.json
+Expected root:
+
+```text
+local/benchmark-data/redaction/ai4privacy/pii-masking-300k/
 ```
 
-Public-dataset preparation is still local/operator-run. The downloaded dataset should be placed under `local/benchmark-data/redaction/ai4privacy/pii-masking-300k/` and preflighted before any full compare:
+### 3) Check the dataset files
 
 ```bash
 ./redaction-eval \
   --dataset-format ai4privacy-pii-masking-300k \
   --dataset-root local/benchmark-data/redaction/ai4privacy/pii-masking-300k \
-  --dataset-file english_openpii_38k.jsonl \
+  --dataset-file data/validation/1english_openpii_8k.jsonl \
+  --check-dataset
+
+./redaction-eval \
+  --dataset-format ai4privacy-pii-masking-300k \
+  --dataset-root local/benchmark-data/redaction/ai4privacy/pii-masking-300k \
+  --dataset-file data/train/1english_openpii_30k.jsonl \
   --check-dataset
 ```
 
-Prepare the full validation fixture locally:
+### 4) Prepare local full fixtures
 
 ```bash
-mkdir -p tmp/redaction-eval/fixtures
+mkdir -p tmp/redaction-eval/fixtures tmp/redaction-eval/reports
+
 ./redaction-eval \
   --dataset-format ai4privacy-pii-masking-300k \
   --dataset-root local/benchmark-data/redaction/ai4privacy/pii-masking-300k \
-  --dataset-file english_openpii_8k.jsonl \
-  --prepare-output tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl
-```
+  --dataset-file data/validation/1english_openpii_8k.jsonl \
+  --prepare-output tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl \
+  --max-cases 1065
 
-Prepare the full train fixture locally:
-
-```bash
-mkdir -p tmp/redaction-eval/fixtures
 ./redaction-eval \
   --dataset-format ai4privacy-pii-masking-300k \
   --dataset-root local/benchmark-data/redaction/ai4privacy/pii-masking-300k \
-  --dataset-file english_openpii_38k.jsonl \
-  --prepare-output tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl
+  --dataset-file data/train/1english_openpii_30k.jsonl \
+  --prepare-output tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl \
+  --max-cases 3817
 ```
 
-The exact commands used to reproduce the current local validation and train compares are:
+### 5) Run the compares
 
 ```bash
-mkdir -p tmp/redaction-eval/reports
 ./redaction-eval \
   --fixture tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl \
   --compare-mode regex \
@@ -108,144 +187,28 @@ mkdir -p tmp/redaction-eval/reports
   --output tmp/redaction-eval/reports/ai4privacy-train-regex-vs-hybrid.json
 ```
 
-The harness writes append-only checkpoint sidecars beside `--output` and automatically resumes from them on rerun. For the commands above, the sidecars are:
+### 6) If you want a clean rerun
 
-- `tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json.regex.cases.jsonl`
-- `tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json.hybrid.cases.jsonl`
-- `tmp/redaction-eval/reports/ai4privacy-train-regex-vs-hybrid.json.regex.cases.jsonl`
-- `tmp/redaction-eval/reports/ai4privacy-train-regex-vs-hybrid.json.hybrid.cases.jsonl`
+The command automatically resumes from checkpoint sidecars if you reuse the same `--output` path. If you want a fresh run, delete the report JSON and its matching `.cases.jsonl` sidecars first.
 
-If you want a clean rerun instead of an auto-resume, delete the report JSON and its `.cases.jsonl` sidecars first. The harness now stamps checkpoint metadata with its binary-metrics schema version, so stale sidecars from older scoring code are rejected instead of being resumed silently.
 
-## Endpoint Configuration
+## Discussion
 
-The harness only reads redaction endpoint settings from two places:
+This benchmark is useful because it separates two different questions:
 
-1. `--config <path>`: loads the `[redaction]` table from that TOML file.
-2. Explicit CLI overrides: `--redaction-base-url`, `--redaction-model`, `--redaction-api-key`, `--timeout-seconds`.
+1. **Did the system hide the sensitive value at all?**
+2. **Did it hide it under the expected category?**
 
-If you pass both, CLI flags win over `[redaction]`.
+Those are not the same thing.
 
-If you pass neither, the harness uses the built-in `RedactionConfig` defaults:
+For some operators, wrong-label redaction is still acceptable if the value is hidden. For others, category quality matters because the downstream system needs reliable placeholder semantics.
 
-- base URL: `http://127.0.0.1:8080/v1`
-- model: `qwen3-14b`
-- API key: `local`
-- timeout: `45`
+That is why both views are tracked here.
 
-The harness does not read embeddings settings, summary settings, or `VAULT_EMBED_*` variables.
+Right now the benchmark says:
 
-Explicit override example without relying on `vault-ops.toml`:
-
-```bash
-./redaction-eval \
-  --fixture tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl \
-  --compare-mode regex \
-  --compare-mode hybrid \
-  --redaction-base-url http://127.0.0.1:8080/v1 \
-  --redaction-model qwen3-14b \
-  --redaction-api-key local \
-  --timeout-seconds 45 \
-  --output tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json
-```
-
-The redaction harness talks to the redaction chat-completions endpoint only. In this repo that means `POST <redaction-base-url>/chat/completions` for `model` and `hybrid` runs.
-
-The embeddings endpoint is separate. `vault-ops` and vector indexing use `POST <embed-base-url>/embeddings`, but `./redaction-eval` does not call embeddings at all. Embeddings configuration does not affect a harness run unless you are separately starting or debugging the broader `llm-vault` stack.
-
-## Current Results
-
-These runs compare `regex` against `hybrid`. The hybrid run used `qwen3-14b` for model-backed detection.
-
-Read the results in two ways:
-
-- **Strict label-aware metrics** ask whether the system hid the value and used the expected placeholder label.
-- **Exact binary hide-vs-leak metrics** ask the simpler question: was the sensitive value fully hidden at all, regardless of label?
-
-The harness now emits exact binary counts directly from each case by aligning the source text against both the expected and actual redacted outputs and scoring source-span coverage. That produces these exact fields:
-
-- `hidden_any_label`: expected sensitive values that were fully hidden by some placeholder, even if the placeholder label was wrong
-- `leaked_visible`: expected sensitive values that remained visible because no actual redaction fully covered them
-- `mislabeled_but_hidden`: expected sensitive values that were fully hidden, but only under the wrong placeholder label
-- `binary_over_redaction_count`: actual redaction spans that do not overlap any expected sensitive span
-
-These are exact counts, not bounds. The harness also reports `binary_hide_rate`, which is the expected-value hide rate:
-
-```text
-binary_hide_rate = hidden_any_label / expected_sensitive_values_total
-```
-
-Binary precision/F1 are intentionally not reported. The harness can score exact hide coverage on the expected-value axis, but there is no equally clean one-to-one "predicted positive" unit once a single actual placeholder can cover multiple expected values or an oversized actual span can cover one expected value plus extra text.
-
-### Strict Label-Aware Summary
-
-| Split | Precision | Recall | F1 | F2 | Fewer mismatches |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Validation | +0.0262 | +0.1757 | +0.1999 | +0.1873 | 77 fewer |
-| Train | +0.0294 | +0.1665 | +0.1925 | +0.1784 | 288 fewer |
-
-Hybrid also improves the exact binary hide rate materially on both full splits:
-
-| Split | Regex hide rate | Hybrid hide rate | Hide-rate gain |
-| --- | ---: | ---: | ---: |
-| Validation | 0.2211 | 0.4647 | +0.2435 |
-| Train | 0.2200 | 0.4722 | +0.2522 |
-
-### Strict Label-Aware Full Comparison
-
-| Split | Mode | Precision | Recall | F1 | F2 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Validation | `regex` | 0.7150 | 0.1619 | 0.2640 | 0.1915 |
-| Validation | `hybrid` | 0.7412 | 0.3375 | 0.4639 | 0.3788 |
-| Train | `regex` | 0.7039 | 0.1564 | 0.2559 | 0.1852 |
-| Train | `hybrid` | 0.7333 | 0.3229 | 0.4484 | 0.3636 |
-
-### Strict Label-Aware Counts
-
-| Split | Mode | Should have been redacted | Redacted with the expected label | Strict misses | Unexpected redactions |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Validation | `regex` | 4201 | 680 | 3521 | 271 |
-| Validation | `hybrid` | 4201 | 1418 | 2783 | 495 |
-| Train | `regex` | 16148 | 2525 | 13623 | 1062 |
-| Train | `hybrid` | 16148 | 5214 | 10934 | 1896 |
-
-Here, **"redacted with the expected label"** means the system both hid the value and used the expected placeholder category in this benchmark. A wrong-label redaction is still useful in practice because the value is hidden, but the strict benchmark counts it as a miss plus an unexpected redaction.
-
-### Exact Binary Hide-vs-Leak View
-
-The checked-in full validation/train summaries in [`reports/`](reports) now include the exact binary fields from the latest full local compare outputs. These counts come directly from the harness's per-case span scoring, not from bounds or estimates.
-
-### Exact Binary Full Comparison
-
-| Split | Mode | Hidden any label | Leaked visible | Mislabeled but hidden | Binary over-redaction | Binary hide rate |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Validation | `regex` | 929 | 3272 | 314 | 50 | 0.2211 |
-| Validation | `hybrid` | 1952 | 2249 | 471 | 135 | 0.4647 |
-| Train | `regex` | 3553 | 12595 | 1374 | 170 | 0.2200 |
-| Train | `hybrid` | 7625 | 8523 | 2016 | 429 | 0.4722 |
-
-### Exact Binary Delta vs `regex`
-
-| Split | Extra hidden values | Fewer leaked values | Extra mislabeled-but-hidden | Extra binary over-redactions | Hide-rate gain |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Validation | +1023 | 1023 fewer | +157 | +85 | +0.2435 |
-| Train | +4072 | 4072 fewer | +642 | +259 | +0.2522 |
-
-The exact per-run summaries are tracked in [`reports/`](reports).
-
-## Where It Still Struggles
-
-Across both full splits, the biggest remaining weak spots are:
-
-- **Account and ID-like fields** remain the largest miss bucket.
-- **Custom handles and usernames** improve very little under hybrid.
-- **Addresses** improve, but still leak too often.
-- **Person names** still miss often enough to matter.
-- **Phone numbers** are the biggest over-redaction bucket.
-
-## Scope
-
-- This benchmark scores placeholder keys, not span overlap.
-- It does not yet measure retrieval quality after redaction across vault search workflows.
-- It does not yet cover photo, screenshot, OCR-heavy document, scanned-PDF, or bridged-mail behavior.
-- Different local models or endpoint wiring can change the numbers materially.
+- `llm-vault` redaction is better in `hybrid` mode than in `regex`
+- the gain is real and measurable
+- the remaining leak rate is still too high
+- future work should focus first on the weak categories that dominate leakage, especially account-like fields, custom identifiers, and addresses
+- future work should focus on improving the redaction flow, for example via prompt engineering for the redaction model.
