@@ -11,12 +11,13 @@ import time
 import tomllib
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, TextIO
 
 from vault_redaction import (
+    AppliedRedactionSpan,
     PersistentRedactionMap,
     RedactionConfig,
     redact_chunks_with_persistent_map,
@@ -33,6 +34,8 @@ DEFAULT_PREPARED_FIXTURE_PATH = Path(
 )
 DEFAULT_REPORT_PATH = Path("tmp/redaction-eval/reports/redaction-eval-report.json")
 SUPPORTED_DATASET_FORMATS = ("ai4privacy-pii-masking-300k",)
+BINARY_METRICS_VERSION = 2
+CHECKPOINT_SCHEMA_VERSION = 2
 AI4PRIVACY_LABEL_MAP = {
     "ACCOUNT": "ACCOUNT",
     "ACCOUNTNUMBER": "ACCOUNT",
@@ -80,6 +83,7 @@ class RedactionEvalCase:
     text: str
     expected_redacted_text: str
     expected_placeholders: list[str]
+    expected_spans: list["RedactionSpan"] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -95,6 +99,7 @@ class RedactionEvalCaseResult:
     text_mismatch: bool
     candidate_sources: dict[str, int]
     llm_candidates_detected: int
+    actual_spans: list["RedactionSpan"] = field(default_factory=list)
     hidden_any_label: int = 0
     leaked_visible: int = 0
     mislabeled_but_hidden: int = 0
@@ -287,6 +292,37 @@ def _require_placeholder_list(raw: dict[str, Any]) -> list[str]:
     return out
 
 
+def _optional_redaction_spans(raw: dict[str, Any]) -> list[RedactionSpan]:
+    value = raw.get("expected_spans")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("expected_spans must be a list when present")
+    spans: list[RedactionSpan] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("expected_spans entries must be JSON objects")
+        start = item.get("start")
+        end = item.get("end")
+        label = item.get("label")
+        placeholder = item.get("placeholder")
+        if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
+            raise ValueError("expected_spans entries require valid integer start/end offsets")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("expected_spans entries require a non-empty label")
+        if not isinstance(placeholder, str) or not placeholder.strip():
+            raise ValueError("expected_spans entries require a non-empty placeholder")
+        spans.append(
+            RedactionSpan(
+                start=start,
+                end=end,
+                label=label.strip().upper(),
+                placeholder=placeholder.strip(),
+            )
+        )
+    return spans
+
+
 def load_eval_cases(path: Path) -> list[RedactionEvalCase]:
     cases: list[RedactionEvalCase] = []
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -302,6 +338,7 @@ def load_eval_cases(path: Path) -> list[RedactionEvalCase]:
                 text=_require_str(raw, "text"),
                 expected_redacted_text=_require_str(raw, "expected_redacted_text"),
                 expected_placeholders=_require_placeholder_list(raw),
+                expected_spans=_optional_redaction_spans(raw),
             )
         )
     if not cases:
@@ -425,6 +462,7 @@ def _normalize_ai4privacy_case(raw: dict[str, Any], row_index: int) -> Redaction
 
     key_counts: Counter[str] = Counter()
     value_to_placeholder: dict[tuple[str, str], str] = {}
+    expected_spans: list[RedactionSpan] = []
     rebuilt: list[str] = []
     cursor = 0
     for match in _TARGET_LABEL_PATTERN.finditer(target_text):
@@ -443,6 +481,14 @@ def _normalize_ai4privacy_case(raw: dict[str, Any], row_index: int) -> Redaction
         rebuilt.append(target_text[cursor : match.start()])
         rebuilt.append(placeholder)
         cursor = match.end()
+        expected_spans.append(
+            RedactionSpan(
+                start=int(entity["start"]),
+                end=int(entity["end"]),
+                label=mapped_key,
+                placeholder=placeholder,
+            )
+        )
     rebuilt.append(target_text[cursor:])
     if any(bucket for bucket in label_buckets.values()):
         return None
@@ -458,6 +504,7 @@ def _normalize_ai4privacy_case(raw: dict[str, Any], row_index: int) -> Redaction
         text=source_text,
         expected_redacted_text=expected_redacted_text,
         expected_placeholders=expected_placeholders,
+        expected_spans=expected_spans,
     )
 
 
@@ -498,6 +545,7 @@ def prepare_ai4privacy_fixture(
                 "text": case.text,
                 "expected_redacted_text": case.expected_redacted_text,
                 "expected_placeholders": case.expected_placeholders,
+                "expected_spans": [asdict(span) for span in case.expected_spans],
             },
             sort_keys=True,
         )
@@ -599,16 +647,17 @@ def _compute_binary_case_metrics(
     case: RedactionEvalCase,
     *,
     actual_redacted_text: str,
+    actual_spans: list[RedactionSpan] | None = None,
 ) -> dict[str, int | float]:
-    expected_spans = _extract_redaction_spans(case.text, case.expected_redacted_text)
-    actual_spans = _extract_redaction_spans(case.text, actual_redacted_text)
+    expected_spans = case.expected_spans or _extract_redaction_spans(case.text, case.expected_redacted_text)
+    resolved_actual_spans = actual_spans or _extract_redaction_spans(case.text, actual_redacted_text)
 
     hidden_any_label = 0
     mislabeled_but_hidden = 0
     for expected in expected_spans:
         covering_actual = [
             actual
-            for actual in actual_spans
+            for actual in resolved_actual_spans
             if actual.start <= expected.start and actual.end >= expected.end
         ]
         if not covering_actual:
@@ -620,7 +669,7 @@ def _compute_binary_case_metrics(
     leaked_visible = len(expected_spans) - hidden_any_label
     binary_over_redaction_count = sum(
         1
-        for actual in actual_spans
+        for actual in resolved_actual_spans
         if not any(actual.start < expected.end and actual.end > expected.start for expected in expected_spans)
     )
     binary_hide_rate = hidden_any_label / len(expected_spans) if expected_spans else 0.0
@@ -630,7 +679,7 @@ def _compute_binary_case_metrics(
         "mislabeled_but_hidden": mislabeled_but_hidden,
         "binary_over_redaction_count": binary_over_redaction_count,
         "binary_hide_rate": binary_hide_rate,
-        "binary_metrics_version": 1,
+        "binary_metrics_version": BINARY_METRICS_VERSION,
     }
 
 
@@ -663,7 +712,19 @@ def _score_from_counts(tp: int, fp: int, fn: int, cases_total: int) -> Redaction
 
 
 def _case_result_needs_binary_backfill(result: RedactionEvalCaseResult) -> bool:
-    return result.binary_metrics_version < 1
+    return result.binary_metrics_version < BINARY_METRICS_VERSION
+
+
+def _actual_spans_from_applied(applied_spans: list[AppliedRedactionSpan]) -> list[RedactionSpan]:
+    return [
+        RedactionSpan(
+            start=span.start,
+            end=span.end,
+            label=span.key_name,
+            placeholder=span.placeholder,
+        )
+        for span in applied_spans
+    ]
 
 
 def _backfill_case_result_binary_metrics(
@@ -678,7 +739,11 @@ def _backfill_case_result_binary_metrics(
         case = case_by_id.get(result.case_id)
         if case is None:
             raise ValueError(f"missing benchmark case for checkpoint result: {result.case_id}")
-        metrics = _compute_binary_case_metrics(case, actual_redacted_text=result.actual_redacted_text)
+        metrics = _compute_binary_case_metrics(
+            case,
+            actual_redacted_text=result.actual_redacted_text,
+            actual_spans=result.actual_spans or None,
+        )
         for key, value in metrics.items():
             setattr(result, key, value)
 
@@ -840,7 +905,12 @@ def run_eval_cases(
         missing = _counter_diff(expected_counter, actual_counter)
         unexpected = _counter_diff(actual_counter, expected_counter)
         text_mismatch = actual_redacted_text != case.expected_redacted_text
-        binary_metrics = _compute_binary_case_metrics(case, actual_redacted_text=actual_redacted_text)
+        actual_spans = _actual_spans_from_applied(run.applied_spans_by_chunk[0])
+        binary_metrics = _compute_binary_case_metrics(
+            case,
+            actual_redacted_text=actual_redacted_text,
+            actual_spans=actual_spans,
+        )
         case_result = RedactionEvalCaseResult(
             case_id=case.case_id,
             source_type=case.source_type,
@@ -853,6 +923,7 @@ def run_eval_cases(
             text_mismatch=text_mismatch,
             candidate_sources=dict(sorted(run.candidate_sources.items())),
             llm_candidates_detected=llm_hits,
+            actual_spans=actual_spans,
             hidden_any_label=int(binary_metrics["hidden_any_label"]),
             leaked_visible=int(binary_metrics["leaked_visible"]),
             mislabeled_but_hidden=int(binary_metrics["mislabeled_but_hidden"]),
@@ -897,6 +968,8 @@ def _checkpoint_path_for_mode(output_path: Path, mode: str) -> Path:
 
 def _checkpoint_metadata(*, fixture_path: Path, cfg: RedactionConfig) -> dict[str, Any]:
     return {
+        "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "binary_metrics_version": BINARY_METRICS_VERSION,
         "record_type": "meta",
         "fixture_path": str(fixture_path),
         "mode": cfg.mode,

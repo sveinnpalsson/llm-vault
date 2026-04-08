@@ -7,6 +7,8 @@ from pathlib import Path
 from redaction_eval_harness import (
     ProgressReporter,
     RedactionEvalCase,
+    RedactionSpan,
+    _compute_binary_case_metrics,
     build_arg_parser,
     check_dataset_inputs,
     extract_placeholder_keys,
@@ -18,7 +20,7 @@ from redaction_eval_harness import (
     resolve_redaction_config,
     run_eval_cases,
 )
-from vault_redaction import RedactionConfig
+from vault_redaction import AppliedRedactionSpan, RedactionConfig
 
 FIXTURES = Path("eval/redaction/fixtures")
 
@@ -125,6 +127,16 @@ def test_run_eval_cases_counts_wrong_label_hides_in_binary_metrics(monkeypatch) 
 
     class StubRun:
         chunk_text_redacted = ["Contact <REDACTED_PHONE_A>"]
+        applied_spans_by_chunk = [
+            [
+                AppliedRedactionSpan(
+                    start=8,
+                    end=28,
+                    key_name="PHONE",
+                    placeholder="<REDACTED_PHONE_A>",
+                )
+            ]
+        ]
         candidate_sources = {"llm_chunk": 1}
 
     monkeypatch.setattr(
@@ -149,6 +161,9 @@ def test_run_eval_cases_counts_wrong_label_hides_in_binary_metrics(monkeypatch) 
     assert report.summary.binary_hide_rate == 1.0
     assert report.cases[0].hidden_any_label == 1
     assert report.cases[0].mislabeled_but_hidden == 1
+    assert report.cases[0].actual_spans == [
+        RedactionSpan(start=8, end=28, label="PHONE", placeholder="<REDACTED_PHONE_A>")
+    ]
 
 
 def test_run_eval_cases_emits_visible_progress(capsys) -> None:
@@ -212,9 +227,46 @@ def test_prepare_ai4privacy_fixture_writes_benchmark_cases(tmp_path: Path) -> No
     cases = load_eval_cases(output_path)
     assert [case.case_id for case in cases] == ["ai4privacy-40768A", "ai4privacy-40768B"]
     assert cases[0].expected_redacted_text == "Email: <REDACTED_EMAIL_A>"
+    assert cases[0].expected_spans == [
+        RedactionSpan(start=7, end=24, label="EMAIL", placeholder="<REDACTED_EMAIL_A>")
+    ]
     assert cases[1].expected_redacted_text == (
         "Applicant: <REDACTED_PERSON_A> <REDACTED_PERSON_B>\nEmail: <REDACTED_EMAIL_A>"
     )
+    assert cases[1].expected_spans == [
+        RedactionSpan(start=11, end=17, label="PERSON", placeholder="<REDACTED_PERSON_A>"),
+        RedactionSpan(start=18, end=25, label="PERSON", placeholder="<REDACTED_PERSON_B>"),
+        RedactionSpan(start=33, end=50, label="EMAIL", placeholder="<REDACTED_EMAIL_A>"),
+    ]
+
+
+def test_compute_binary_case_metrics_uses_exact_spans_when_redacted_text_alignment_is_ambiguous() -> None:
+    case = RedactionEvalCase(
+        case_id="ambiguous-expected",
+        source_type="docs",
+        text="Lead foo X bar X baz",
+        expected_redacted_text="Lead <REDACTED_PERSON_A> X <REDACTED_PERSON_B>",
+        expected_placeholders=["PERSON", "PERSON"],
+        expected_spans=[
+            RedactionSpan(start=5, end=8, label="PERSON", placeholder="<REDACTED_PERSON_A>"),
+            RedactionSpan(start=11, end=14, label="PERSON", placeholder="<REDACTED_PERSON_B>"),
+        ],
+    )
+
+    metrics = _compute_binary_case_metrics(
+        case,
+        actual_redacted_text="Lead <REDACTED_PERSON_A> X <REDACTED_PERSON_B>",
+        actual_spans=[
+            RedactionSpan(start=5, end=8, label="PERSON", placeholder="<REDACTED_PERSON_A>"),
+            RedactionSpan(start=11, end=14, label="PERSON", placeholder="<REDACTED_PERSON_B>"),
+        ],
+    )
+
+    assert metrics["hidden_any_label"] == 2
+    assert metrics["leaked_visible"] == 0
+    assert metrics["mislabeled_but_hidden"] == 0
+    assert metrics["binary_over_redaction_count"] == 0
+    assert metrics["binary_hide_rate"] == 1.0
 
 
 def test_resolve_redaction_config_reads_explicit_toml_and_overrides(tmp_path: Path) -> None:

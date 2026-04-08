@@ -232,9 +232,18 @@ class RedactionCandidate:
 class RedactionRunResult:
     chunk_text_redacted: list[str]
     inserted_entries: list[dict[str, str]]
+    applied_spans_by_chunk: list[list["AppliedRedactionSpan"]]
     entries_total: int
     items_redacted: int
     candidate_sources: dict[str, int]
+
+
+@dataclass(slots=True, frozen=True)
+class AppliedRedactionSpan:
+    start: int
+    end: int
+    key_name: str
+    placeholder: str
 
 
 @dataclass(slots=True)
@@ -336,6 +345,84 @@ def render_redacted_text(
     if selected_mode in {"regex", "hybrid"}:
         out = _regex_final_pass(out)
     return out
+
+
+def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def trace_redaction_spans(
+    text: str,
+    *,
+    mode: str,
+    table: PersistentRedactionMap,
+) -> list[AppliedRedactionSpan]:
+    selected_mode = (mode or "hybrid").strip().lower()
+    if selected_mode not in _ALLOWED_MODES:
+        selected_mode = "hybrid"
+
+    source = text or ""
+    lowered_source = source.lower()
+    occupied: list[tuple[int, int]] = []
+    spans: list[AppliedRedactionSpan] = []
+
+    def _mark_span(start: int, end: int, *, key_name: str, placeholder: str) -> None:
+        span = (start, end)
+        if start >= end:
+            return
+        if any(_spans_overlap(span, seen) for seen in occupied):
+            return
+        occupied.append(span)
+        spans.append(
+            AppliedRedactionSpan(
+                start=start,
+                end=end,
+                key_name=key_name,
+                placeholder=placeholder,
+            )
+        )
+
+    for placeholder, value in sorted(
+        table.placeholder_to_value.items(),
+        key=lambda item: len(item[1]),
+        reverse=True,
+    ):
+        key_name = str(table.placeholder_to_key.get(placeholder) or "CUSTOM")
+        exact_pattern = re.compile(re.escape(value), flags=re.I)
+        for match in exact_pattern.finditer(source):
+            _mark_span(match.start(), match.end(), key_name=key_name, placeholder=placeholder)
+
+        whitespace_pattern = _compile_whitespace_tolerant_pattern(value)
+        if whitespace_pattern is not None:
+            for match in whitespace_pattern.finditer(source):
+                _mark_span(match.start(), match.end(), key_name=key_name, placeholder=placeholder)
+
+        target = value.lower()
+        best = min(4, len(target) - 1) if len(target) > 1 else 0
+        if best > 0:
+            for k in range(len(target) - 1, best - 1, -1):
+                prefix = target[:k]
+                if lowered_source.endswith(prefix):
+                    _mark_span(len(source) - k, len(source), key_name=key_name, placeholder=placeholder)
+                    break
+            for k in range(len(target) - 1, best - 1, -1):
+                suffix = target[len(target) - k :]
+                if lowered_source.startswith(suffix):
+                    _mark_span(0, k, key_name=key_name, placeholder=placeholder)
+                    break
+
+    if selected_mode in {"regex", "hybrid"}:
+        for pattern, key_name in _RE_PATTERNS:
+            for match in pattern.finditer(source):
+                _mark_span(
+                    match.start(),
+                    match.end(),
+                    key_name=key_name,
+                    placeholder=f"<REDACTED_{key_name}>",
+                )
+
+    spans.sort(key=lambda span: (span.start, span.end, span.key_name, span.placeholder))
+    return spans
 
 
 def _normalize_key_name(raw: str) -> str:
@@ -842,15 +929,20 @@ def redact_chunks_with_persistent_map(
             )
 
     redacted_chunks: list[str] = []
+    applied_spans_by_chunk: list[list[AppliedRedactionSpan]] = []
     for text in chunks:
         out = render_redacted_text(text, mode=selected_mode, table=table)
         if out != text:
             redacted_items += 1
         redacted_chunks.append(out)
+        applied_spans_by_chunk.append(
+            trace_redaction_spans(text, mode=selected_mode, table=table)
+        )
 
     return RedactionRunResult(
         chunk_text_redacted=redacted_chunks,
         inserted_entries=inserted_entries,
+        applied_spans_by_chunk=applied_spans_by_chunk,
         entries_total=len(table.value_to_placeholder),
         items_redacted=redacted_items,
         candidate_sources=dict(sorted(candidate_sources.items())),

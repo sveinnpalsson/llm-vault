@@ -30,6 +30,8 @@ The committed fixtures in this directory are small quick-check fixtures. The ful
 - `tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl`
 - `tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl`
 
+Prepared AI4Privacy fixtures now carry exact expected source spans from `privacy_mask`. The harness uses those stored spans for binary hide-vs-leak scoring, so real prepared fixtures do not depend on reverse-aligning the expected redacted text back onto the source text.
+
 ## Exact Reproduction Commands
 
 Small regex sanity check:
@@ -65,6 +67,28 @@ Public-dataset preparation is still local/operator-run. The downloaded dataset s
   --check-dataset
 ```
 
+Prepare the full validation fixture locally:
+
+```bash
+mkdir -p tmp/redaction-eval/fixtures
+./redaction-eval \
+  --dataset-format ai4privacy-pii-masking-300k \
+  --dataset-root local/benchmark-data/redaction/ai4privacy/pii-masking-300k \
+  --dataset-file english_openpii_8k.jsonl \
+  --prepare-output tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl
+```
+
+Prepare the full train fixture locally:
+
+```bash
+mkdir -p tmp/redaction-eval/fixtures
+./redaction-eval \
+  --dataset-format ai4privacy-pii-masking-300k \
+  --dataset-root local/benchmark-data/redaction/ai4privacy/pii-masking-300k \
+  --dataset-file english_openpii_38k.jsonl \
+  --prepare-output tmp/redaction-eval/fixtures/ai4privacy-train-full.jsonl
+```
+
 The exact commands used to reproduce the current local validation and train compares are:
 
 ```bash
@@ -84,7 +108,50 @@ mkdir -p tmp/redaction-eval/reports
   --output tmp/redaction-eval/reports/ai4privacy-train-regex-vs-hybrid.json
 ```
 
-The harness writes append-only checkpoint sidecars beside `--output` and automatically resumes from them on rerun.
+The harness writes append-only checkpoint sidecars beside `--output` and automatically resumes from them on rerun. For the commands above, the sidecars are:
+
+- `tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json.regex.cases.jsonl`
+- `tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json.hybrid.cases.jsonl`
+- `tmp/redaction-eval/reports/ai4privacy-train-regex-vs-hybrid.json.regex.cases.jsonl`
+- `tmp/redaction-eval/reports/ai4privacy-train-regex-vs-hybrid.json.hybrid.cases.jsonl`
+
+If you want a clean rerun instead of an auto-resume, delete the report JSON and its `.cases.jsonl` sidecars first. The harness now stamps checkpoint metadata with its binary-metrics schema version, so stale sidecars from older scoring code are rejected instead of being resumed silently.
+
+## Endpoint Configuration
+
+The harness only reads redaction endpoint settings from two places:
+
+1. `--config <path>`: loads the `[redaction]` table from that TOML file.
+2. Explicit CLI overrides: `--redaction-base-url`, `--redaction-model`, `--redaction-api-key`, `--timeout-seconds`.
+
+If you pass both, CLI flags win over `[redaction]`.
+
+If you pass neither, the harness uses the built-in `RedactionConfig` defaults:
+
+- base URL: `http://127.0.0.1:8080/v1`
+- model: `qwen3-14b`
+- API key: `local`
+- timeout: `45`
+
+The harness does not read embeddings settings, summary settings, or `VAULT_EMBED_*` variables.
+
+Explicit override example without relying on `vault-ops.toml`:
+
+```bash
+./redaction-eval \
+  --fixture tmp/redaction-eval/fixtures/ai4privacy-validation-full.jsonl \
+  --compare-mode regex \
+  --compare-mode hybrid \
+  --redaction-base-url http://127.0.0.1:8080/v1 \
+  --redaction-model qwen3-14b \
+  --redaction-api-key local \
+  --timeout-seconds 45 \
+  --output tmp/redaction-eval/reports/ai4privacy-validation-regex-vs-hybrid.json
+```
+
+The redaction harness talks to the redaction chat-completions endpoint only. In this repo that means `POST <redaction-base-url>/chat/completions` for `model` and `hybrid` runs.
+
+The embeddings endpoint is separate. `vault-ops` and vector indexing use `POST <embed-base-url>/embeddings`, but `./redaction-eval` does not call embeddings at all. Embeddings configuration does not affect a harness run unless you are separately starting or debugging the broader `llm-vault` stack.
 
 ## Current Results
 
