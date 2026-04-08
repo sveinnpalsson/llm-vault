@@ -184,6 +184,13 @@ Binary precision/F1 are intentionally not reported. The harness can score exact 
 | Validation | +0.0262 | +0.1757 | +0.1999 | +0.1873 | 77 fewer |
 | Train | +0.0294 | +0.1665 | +0.1925 | +0.1784 | 288 fewer |
 
+Hybrid also improves the exact binary hide rate materially on both full splits:
+
+| Split | Regex hide rate | Hybrid hide rate | Hide-rate gain |
+| --- | ---: | ---: | ---: |
+| Validation | 0.2211 | 0.4647 | +0.2435 |
+| Train | 0.2200 | 0.4722 | +0.2522 |
+
 ### Strict Label-Aware Full Comparison
 
 | Split | Mode | Precision | Recall | F1 | F2 |
@@ -206,9 +213,23 @@ Here, **"redacted with the expected label"** means the system both hid the value
 
 ### Exact Binary Hide-vs-Leak View
 
-The checked-in full validation/train summaries in [`reports/`](reports) were generated before the harness started emitting exact binary fields, and the local prepared fixtures plus raw compare outputs they reference are not present in this worktree. Because of that, this repo copy cannot publish refreshed exact full-split binary numbers yet.
+The checked-in full validation/train summaries in [`reports/`](reports) now include the exact binary fields from the latest full local compare outputs. These counts come directly from the harness's per-case span scoring, not from bounds or estimates.
 
-To regenerate exact full-split binary metrics honestly, rerun the same local compare commands shown above and then refresh the tracked summaries from the resulting `tmp/redaction-eval/reports/*.json` outputs. Once regenerated, the public page should report the exact `hidden_any_label`, `leaked_visible`, `mislabeled_but_hidden`, `binary_over_redaction_count`, and `binary_hide_rate` values from those reports directly.
+### Exact Binary Full Comparison
+
+| Split | Mode | Hidden any label | Leaked visible | Mislabeled but hidden | Binary over-redaction | Binary hide rate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Validation | `regex` | 929 | 3272 | 314 | 50 | 0.2211 |
+| Validation | `hybrid` | 1952 | 2249 | 471 | 135 | 0.4647 |
+| Train | `regex` | 3553 | 12595 | 1374 | 170 | 0.2200 |
+| Train | `hybrid` | 7625 | 8523 | 2016 | 429 | 0.4722 |
+
+### Exact Binary Delta vs `regex`
+
+| Split | Extra hidden values | Fewer leaked values | Extra mislabeled-but-hidden | Extra binary over-redactions | Hide-rate gain |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Validation | +1023 | 1023 fewer | +157 | +85 | +0.2435 |
+| Train | +4072 | 4072 fewer | +642 | +259 | +0.2522 |
 
 The exact per-run summaries are tracked in [`reports/`](reports).
 

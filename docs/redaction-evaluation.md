@@ -40,6 +40,8 @@ Track at least:
 
 Do not publish "possibly hidden" or other bounds language when the harness has per-case outputs available. If exact binary counts cannot be regenerated for a tracked public report, say that explicitly and rerun the report locally before updating the public page.
 
+The current tracked AI4Privacy validation/train summaries in [`eval/redaction/reports/`](../eval/redaction/reports/) now include those exact full-split binary metrics.
+
 ### Phase B: vault-specific retrieval benchmark
 
 Add `llm-vault`-specific evaluation that reflects how the product actually behaves:
