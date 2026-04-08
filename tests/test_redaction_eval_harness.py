@@ -6,6 +6,7 @@ from pathlib import Path
 
 from redaction_eval_harness import (
     ProgressReporter,
+    RedactionEvalCase,
     build_arg_parser,
     check_dataset_inputs,
     extract_placeholder_keys,
@@ -60,6 +61,11 @@ def test_run_eval_cases_matches_seed_fixture() -> None:
     assert report.summary.f2 == 1.0
     assert report.summary.over_redaction_rate == 0.0
     assert report.summary.leakage_rate == 0.0
+    assert report.summary.hidden_any_label == 7
+    assert report.summary.leaked_visible == 0
+    assert report.summary.mislabeled_but_hidden == 0
+    assert report.summary.binary_over_redaction_count == 0
+    assert report.summary.binary_hide_rate == 1.0
     assert report.summary.candidate_sources == {"regex": 7}
     assert report.summary.llm_candidate_cases == 0
     assert report.summary.llm_candidates_total == 0
@@ -67,7 +73,9 @@ def test_run_eval_cases_matches_seed_fixture() -> None:
 
     payload = report_to_dict(report)
     assert payload["summary"]["cases_total"] == 3
+    assert payload["summary"]["hidden_any_label"] == 7
     assert payload["cases"][1]["actual_placeholders"] == ["PERSON", "ACCOUNT", "EMAIL"]
+    assert payload["cases"][1]["hidden_any_label"] == 3
     assert payload["cases"][1]["candidate_sources"] == {"regex": 3}
     assert payload["cases"][1]["llm_candidates_detected"] == 0
 
@@ -91,12 +99,56 @@ def test_run_eval_cases_regex_baseline_leaks_hybrid_smoke_fixture() -> None:
     assert report.summary.recall == 0.5
     assert round(report.summary.f1, 4) == 0.6667
     assert round(report.summary.f2, 4) == 0.5556
+    assert report.summary.hidden_any_label == 1
+    assert report.summary.leaked_visible == 1
+    assert report.summary.mislabeled_but_hidden == 0
+    assert report.summary.binary_over_redaction_count == 0
+    assert report.summary.binary_hide_rate == 0.5
     assert report.summary.candidate_sources == {"regex": 1}
     assert report.summary.llm_candidate_cases == 0
     assert report.summary.llm_candidates_total == 0
     assert report.cases[0].missing_placeholders == ["ADDRESS"]
+    assert report.cases[0].hidden_any_label == 1
+    assert report.cases[0].leaked_visible == 1
     assert report.cases[0].candidate_sources == {"regex": 1}
     assert report.cases[0].llm_candidates_detected == 0
+
+
+def test_run_eval_cases_counts_wrong_label_hides_in_binary_metrics(monkeypatch) -> None:
+    case = RedactionEvalCase(
+        case_id="wrong-label-hide",
+        source_type="docs",
+        text="Contact jane.doe@example.com",
+        expected_redacted_text="Contact <REDACTED_EMAIL_A>",
+        expected_placeholders=["EMAIL"],
+    )
+
+    class StubRun:
+        chunk_text_redacted = ["Contact <REDACTED_PHONE_A>"]
+        candidate_sources = {"llm_chunk": 1}
+
+    monkeypatch.setattr(
+        sys.modules["redaction_eval_harness"],
+        "redact_chunks_with_persistent_map",
+        lambda *args, **kwargs: StubRun(),
+    )
+
+    report = run_eval_cases(
+        [case],
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+        fixture_path=FIXTURES / "redaction_eval_phase_a.jsonl",
+    )
+
+    assert report.summary.tp == 0
+    assert report.summary.fp == 1
+    assert report.summary.fn == 1
+    assert report.summary.hidden_any_label == 1
+    assert report.summary.leaked_visible == 0
+    assert report.summary.mislabeled_but_hidden == 1
+    assert report.summary.binary_over_redaction_count == 0
+    assert report.summary.binary_hide_rate == 1.0
+    assert report.cases[0].hidden_any_label == 1
+    assert report.cases[0].mislabeled_but_hidden == 1
 
 
 def test_run_eval_cases_emits_visible_progress(capsys) -> None:
@@ -226,6 +278,7 @@ def test_main_compare_mode_writes_comparison_payload(tmp_path: Path, monkeypatch
     assert payload["comparison"]["baseline_mode"] == "regex"
     assert [run["mode"] for run in payload["runs"]] == ["regex", "hybrid"]
     assert payload["comparison"]["deltas"][0]["mode"] == "hybrid"
+    assert "binary_hide_rate_delta" in payload["comparison"]["deltas"][0]
 
 
 def test_main_writes_partial_report_and_auto_resumes(tmp_path: Path, monkeypatch) -> None:
@@ -292,6 +345,7 @@ def test_main_writes_partial_report_and_auto_resumes(tmp_path: Path, monkeypatch
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["status"] == "complete"
     assert payload["summary"]["cases_total"] == 3
+    assert payload["summary"]["hidden_any_label"] == 7
     assert payload["resumed_cases"] == 2
     assert interrupted_call_count == 3
     assert resumed_call_count == 1

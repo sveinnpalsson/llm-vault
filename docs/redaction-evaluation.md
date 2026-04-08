@@ -32,11 +32,13 @@ Build the first reproducible benchmark here, likely from a pinned slice of `ai4p
 
 Track at least:
 
-- precision
-- recall
-- F1
-- over-redaction rate
+- strict label-aware precision / recall / F1
+- exact binary hide-vs-leak counts from harness output:
+  `hidden_any_label`, `leaked_visible`, `mislabeled_but_hidden`, and `binary_over_redaction_count`
+- binary hide rate (`hidden_any_label / expected_sensitive_values_total`)
 - leakage examples / failure modes
+
+Do not publish "possibly hidden" or other bounds language when the harness has per-case outputs available. If exact binary counts cannot be regenerated for a tracked public report, say that explicitly and rerun the report locally before updating the public page.
 
 ### Phase B: vault-specific retrieval benchmark
 

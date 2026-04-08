@@ -93,14 +93,22 @@ These runs compare `regex` against `hybrid`. The hybrid run used `qwen3-14b` for
 Read the results in two ways:
 
 - **Strict label-aware metrics** ask whether the system hid the value and used the expected placeholder label.
-- **Binary hide-vs-leak framing** asks the simpler question: was the sensitive value hidden at all, regardless of label?
+- **Exact binary hide-vs-leak metrics** ask the simpler question: was the sensitive value fully hidden at all, regardless of label?
 
-The tracked summaries in [`reports/`](reports) give exact strict metrics. They do **not** preserve enough detail to recover exact binary point counts, because a wrong-label redaction is counted as both:
+The harness now emits exact binary counts directly from each case by aligning the source text against both the expected and actual redacted outputs and scoring source-span coverage. That produces these exact fields:
 
-- one strict miss (`fn`)
-- one unexpected redaction (`fp`)
+- `hidden_any_label`: expected sensitive values that were fully hidden by some placeholder, even if the placeholder label was wrong
+- `leaked_visible`: expected sensitive values that remained visible because no actual redaction fully covered them
+- `mislabeled_but_hidden`: expected sensitive values that were fully hidden, but only under the wrong placeholder label
+- `binary_over_redaction_count`: actual redaction spans that do not overlap any expected sensitive span
 
-So the binary section below reports exact **bounds** from the tracked artifacts. Exact binary point counts would require the local raw per-case reports under `tmp/redaction-eval/reports/`, which are not present in this worktree.
+These are exact counts, not bounds. The harness also reports `binary_hide_rate`, which is the expected-value hide rate:
+
+```text
+binary_hide_rate = hidden_any_label / expected_sensitive_values_total
+```
+
+Binary precision/F1 are intentionally not reported. The harness can score exact hide coverage on the expected-value axis, but there is no equally clean one-to-one "predicted positive" unit once a single actual placeholder can cover multiple expected values or an oversized actual span can cover one expected value plus extra text.
 
 ### Strict Label-Aware Summary
 
@@ -129,30 +137,11 @@ So the binary section below reports exact **bounds** from the tracked artifacts.
 
 Here, **"redacted with the expected label"** means the system both hid the value and used the expected placeholder category in this benchmark. A wrong-label redaction is still useful in practice because the value is hidden, but the strict benchmark counts it as a miss plus an unexpected redaction.
 
-### Binary Hide-vs-Leak View
+### Exact Binary Hide-vs-Leak View
 
-This view asks only whether the sensitive value was hidden at all.
+The checked-in full validation/train summaries in [`reports/`](reports) were generated before the harness started emitting exact binary fields, and the local prepared fixtures plus raw compare outputs they reference are not present in this worktree. Because of that, this repo copy cannot publish refreshed exact full-split binary numbers yet.
 
-From the tracked summaries we can say:
-
-- **guaranteed hidden** = values hidden with the expected label (`tp`)
-- **possibly hidden under the wrong label** = at most the number of unexpected redactions (`fp`)
-- **leaked** therefore falls into a range, not a single exact count
-- **binary over-redaction** also falls into a range, because some unexpected redactions may actually be wrong-label hides rather than true extra redactions
-
-| Split | Mode | Sensitive values total | Guaranteed hidden | Possibly hidden under wrong label | Hidden range | Leaked range | Binary over-redaction range |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Validation | `regex` | 4201 | 680 | 0 to 271 | 680 to 951 | 3250 to 3521 | 0 to 271 |
-| Validation | `hybrid` | 4201 | 1418 | 0 to 495 | 1418 to 1913 | 2288 to 2783 | 0 to 495 |
-| Train | `regex` | 16148 | 2525 | 0 to 1062 | 2525 to 3587 | 12561 to 13623 | 0 to 1062 |
-| Train | `hybrid` | 16148 | 5214 | 0 to 1896 | 5214 to 7110 | 9038 to 10934 | 0 to 1896 |
-
-Plain-English readout:
-
-- On the validation split, `hybrid` definitely hides **1418** values and could hide as many as **1913** if every wrong-label event still hid the underlying value. That means the number of real leaks is somewhere between **2288** and **2783**.
-- On the train split, `hybrid` definitely hides **5214** values and could hide as many as **7110**. That puts real leaks somewhere between **9038** and **10934**.
-- `hybrid` is clearly better than `regex` under both views. It gets many more exact labels right, and it also improves the best-case and worst-case binary hide counts.
-- Even with that improvement, the benchmark still shows a lot of leakage. These numbers are progress numbers, not finish-line numbers.
+To regenerate exact full-split binary metrics honestly, rerun the same local compare commands shown above and then refresh the tracked summaries from the resulting `tmp/redaction-eval/reports/*.json` outputs. Once regenerated, the public page should report the exact `hidden_any_label`, `leaked_visible`, `mislabeled_but_hidden`, `binary_over_redaction_count`, and `binary_hide_rate` values from those reports directly.
 
 The exact per-run summaries are tracked in [`reports/`](reports).
 

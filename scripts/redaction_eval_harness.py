@@ -12,6 +12,7 @@ import tomllib
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -94,6 +95,12 @@ class RedactionEvalCaseResult:
     text_mismatch: bool
     candidate_sources: dict[str, int]
     llm_candidates_detected: int
+    hidden_any_label: int = 0
+    leaked_visible: int = 0
+    mislabeled_but_hidden: int = 0
+    binary_over_redaction_count: int = 0
+    binary_hide_rate: float = 0.0
+    binary_metrics_version: int = 0
 
 
 @dataclass(slots=True)
@@ -109,6 +116,11 @@ class RedactionEvalSummary:
     f2: float
     over_redaction_rate: float
     leakage_rate: float
+    hidden_any_label: int
+    leaked_visible: int
+    mislabeled_but_hidden: int
+    binary_over_redaction_count: int
+    binary_hide_rate: float
     candidate_sources: dict[str, int]
     llm_candidate_cases: int
     llm_candidates_total: int
@@ -163,8 +175,17 @@ class RedactionEvalComparisonDelta:
     recall_delta: float
     f1_delta: float
     f2_delta: float
+    binary_hide_rate_delta: float
     mismatch_delta: int
     llm_candidates_delta: int
+
+
+@dataclass(slots=True, frozen=True)
+class RedactionSpan:
+    start: int
+    end: int
+    label: str
+    placeholder: str
 
 
 class ProgressReporter:
@@ -502,6 +523,117 @@ def _counter_diff(left: Counter[str], right: Counter[str]) -> list[str]:
     return out
 
 
+def _tokenize_redacted_text(text: str) -> tuple[list[str], list[tuple[str, str]]]:
+    literals: list[str] = []
+    placeholders: list[tuple[str, str]] = []
+    cursor = 0
+    for match in _PLACEHOLDER_PATTERN.finditer(text):
+        literals.append(text[cursor : match.start()])
+        placeholders.append((match.group(1), match.group(0)))
+        cursor = match.end()
+    literals.append(text[cursor:])
+    return literals, placeholders
+
+
+def _extract_redaction_spans(source_text: str, redacted_text: str) -> list[RedactionSpan]:
+    literals, placeholders = _tokenize_redacted_text(redacted_text)
+    if not placeholders:
+        if source_text != redacted_text:
+            raise ValueError("redacted text cannot be aligned to source text without placeholders")
+        return []
+    if not source_text.startswith(literals[0]):
+        raise ValueError("leading literal prefix does not align to source text")
+
+    @lru_cache(maxsize=None)
+    def _solve(index: int, source_pos: int) -> tuple[tuple[int, int], ...] | None:
+        if index >= len(placeholders):
+            if source_pos == len(source_text):
+                return ()
+            return None
+
+        next_literal = literals[index + 1]
+        candidate_end_positions: list[int] = []
+        if next_literal:
+            search_pos = source_pos + 1
+            while True:
+                found = source_text.find(next_literal, search_pos)
+                if found < 0:
+                    break
+                candidate_end_positions.append(found)
+                search_pos = found + 1
+        else:
+            candidate_end_positions = list(range(source_pos + 1, len(source_text) + 1))
+
+        solutions: list[tuple[tuple[int, int], ...]] = []
+        for end_pos in candidate_end_positions:
+            next_source_pos = end_pos + len(next_literal)
+            suffix = _solve(index + 1, next_source_pos)
+            if suffix is None:
+                continue
+            solutions.append(((source_pos, end_pos),) + suffix)
+            if len(solutions) > 1:
+                break
+
+        if len(solutions) != 1:
+            return None
+        return solutions[0]
+
+    boundaries = _solve(0, len(literals[0]))
+    if boundaries is None:
+        raise ValueError("redacted text does not have a unique span alignment against source text")
+
+    spans: list[RedactionSpan] = []
+    for (start, end), (label, placeholder) in zip(boundaries, placeholders, strict=True):
+        spans.append(
+            RedactionSpan(
+                start=start,
+                end=end,
+                label=label,
+                placeholder=placeholder,
+            )
+        )
+    return spans
+
+
+def _compute_binary_case_metrics(
+    case: RedactionEvalCase,
+    *,
+    actual_redacted_text: str,
+) -> dict[str, int | float]:
+    expected_spans = _extract_redaction_spans(case.text, case.expected_redacted_text)
+    actual_spans = _extract_redaction_spans(case.text, actual_redacted_text)
+
+    hidden_any_label = 0
+    mislabeled_but_hidden = 0
+    for expected in expected_spans:
+        covering_actual = [
+            actual
+            for actual in actual_spans
+            if actual.start <= expected.start and actual.end >= expected.end
+        ]
+        if not covering_actual:
+            continue
+        hidden_any_label += 1
+        if not any(actual.label == expected.label for actual in covering_actual):
+            mislabeled_but_hidden += 1
+
+    leaked_visible = len(expected_spans) - hidden_any_label
+    binary_over_redaction_count = sum(
+        1
+        for actual in actual_spans
+        if not any(actual.start < expected.end and actual.end > expected.start for expected in expected_spans)
+    )
+    binary_hide_rate = hidden_any_label / len(expected_spans) if expected_spans else 0.0
+    return {
+        "hidden_any_label": hidden_any_label,
+        "leaked_visible": leaked_visible,
+        "mislabeled_but_hidden": mislabeled_but_hidden,
+        "binary_over_redaction_count": binary_over_redaction_count,
+        "binary_hide_rate": binary_hide_rate,
+        "binary_metrics_version": 1,
+    }
+
+
 def _score_from_counts(tp: int, fp: int, fn: int, cases_total: int) -> RedactionEvalSummary:
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
@@ -519,10 +651,36 @@ def _score_from_counts(tp: int, fp: int, fn: int, cases_total: int) -> Redaction
         f2=f2,
         over_redaction_rate=(fp / cases_total) if cases_total else 0.0,
         leakage_rate=(fn / cases_total) if cases_total else 0.0,
+        hidden_any_label=0,
+        leaked_visible=0,
+        mislabeled_but_hidden=0,
+        binary_over_redaction_count=0,
+        binary_hide_rate=0.0,
         candidate_sources={},
         llm_candidate_cases=0,
         llm_candidates_total=0,
     )
+
+
+def _case_result_needs_binary_backfill(result: RedactionEvalCaseResult) -> bool:
+    return result.binary_metrics_version < 1
+
+
+def _backfill_case_result_binary_metrics(
+    results: list[RedactionEvalCaseResult],
+    *,
+    cases: list[RedactionEvalCase],
+) -> None:
+    case_by_id = {case.case_id: case for case in cases}
+    for result in results:
+        if not _case_result_needs_binary_backfill(result):
+            continue
+        case = case_by_id.get(result.case_id)
+        if case is None:
+            raise ValueError(f"missing benchmark case for checkpoint result: {result.case_id}")
+        metrics = _compute_binary_case_metrics(case, actual_redacted_text=result.actual_redacted_text)
+        for key, value in metrics.items():
+            setattr(result, key, value)
 
 
 def build_report_from_case_results(
@@ -538,6 +696,11 @@ def build_report_from_case_results(
     candidate_sources: Counter[str] = Counter()
     llm_candidate_cases = 0
     llm_candidates_total = 0
+    hidden_any_label = 0
+    leaked_visible = 0
+    mislabeled_but_hidden = 0
+    binary_over_redaction_count = 0
+    expected_sensitive_total = 0
 
     for result in results:
         expected_counter = Counter(result.expected_placeholders)
@@ -550,11 +713,21 @@ def build_report_from_case_results(
         llm_candidates_total += result.llm_candidates_detected
         if result.llm_candidates_detected > 0:
             llm_candidate_cases += 1
+        hidden_any_label += result.hidden_any_label
+        leaked_visible += result.leaked_visible
+        mislabeled_but_hidden += result.mislabeled_but_hidden
+        binary_over_redaction_count += result.binary_over_redaction_count
+        expected_sensitive_total += len(result.expected_placeholders)
         if result.text_mismatch or result.missing_placeholders or result.unexpected_placeholders:
             mismatches += 1
 
     summary = _score_from_counts(tp=tp, fp=fp, fn=fn, cases_total=len(results))
     summary.cases_with_mismatch = mismatches
+    summary.hidden_any_label = hidden_any_label
+    summary.leaked_visible = leaked_visible
+    summary.mislabeled_but_hidden = mislabeled_but_hidden
+    summary.binary_over_redaction_count = binary_over_redaction_count
+    summary.binary_hide_rate = hidden_any_label / expected_sensitive_total if expected_sensitive_total else 0.0
     summary.candidate_sources = dict(sorted(candidate_sources.items()))
     summary.llm_candidate_cases = llm_candidate_cases
     summary.llm_candidates_total = llm_candidates_total
@@ -640,6 +813,8 @@ def run_eval_cases(
     case_result_callback: Callable[[RedactionEvalCaseResult, list[RedactionEvalCaseResult]], None] | None = None,
 ) -> RedactionEvalReport:
     results: list[RedactionEvalCaseResult] = list(existing_results or [])
+    if results:
+        _backfill_case_result_binary_metrics(results, cases=cases)
     completed_case_ids = {result.case_id for result in results}
     if progress_reporter is not None:
         progress_reporter.emit_resume(len(results))
@@ -665,6 +840,7 @@ def run_eval_cases(
         missing = _counter_diff(expected_counter, actual_counter)
         unexpected = _counter_diff(actual_counter, expected_counter)
         text_mismatch = actual_redacted_text != case.expected_redacted_text
+        binary_metrics = _compute_binary_case_metrics(case, actual_redacted_text=actual_redacted_text)
         case_result = RedactionEvalCaseResult(
             case_id=case.case_id,
             source_type=case.source_type,
@@ -677,6 +853,12 @@ def run_eval_cases(
             text_mismatch=text_mismatch,
             candidate_sources=dict(sorted(run.candidate_sources.items())),
             llm_candidates_detected=llm_hits,
+            hidden_any_label=int(binary_metrics["hidden_any_label"]),
+            leaked_visible=int(binary_metrics["leaked_visible"]),
+            mislabeled_but_hidden=int(binary_metrics["mislabeled_but_hidden"]),
+            binary_over_redaction_count=int(binary_metrics["binary_over_redaction_count"]),
+            binary_hide_rate=float(binary_metrics["binary_hide_rate"]),
+            binary_metrics_version=int(binary_metrics["binary_metrics_version"]),
         )
         results.append(case_result)
         completed_case_ids.add(case.case_id)
@@ -847,6 +1029,8 @@ def _build_payload(
                     recall_delta=report.summary.recall - baseline.summary.recall,
                     f1_delta=report.summary.f1 - baseline.summary.f1,
                     f2_delta=report.summary.f2 - baseline.summary.f2,
+                    binary_hide_rate_delta=report.summary.binary_hide_rate
+                    - baseline.summary.binary_hide_rate,
                     mismatch_delta=report.summary.cases_with_mismatch - baseline.summary.cases_with_mismatch,
                     llm_candidates_delta=report.summary.llm_candidates_total
                     - baseline.summary.llm_candidates_total,
