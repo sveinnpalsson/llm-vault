@@ -139,6 +139,23 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
+## Automation
+
+Two operator scripts are included for cron-based updates:
+
+- `scripts/run_vault_update_once.sh` runs one `vault-ops update` with UTC start/ok/fail logging
+- `scripts/cron_helper.sh` prints or installs a managed cron block without overwriting unrelated crontab entries
+
+The runner auto-resolves the repo root from its own location, loads `~/.config/llm-vault/secrets.env` when required env vars are missing, always requires `LLM_VAULT_DB_PASSWORD`, and also requires `INBOX_VAULT_DB_PASSWORD` when `[mail_bridge]` is enabled in `vault-ops.toml`.
+
+Example:
+
+```bash
+scripts/cron_helper.sh --install
+```
+
+If you use `inbox-vault` as a mail source, keep it as the first job and run `llm-vault` a few minutes later. The operator setup and bridged two-job flow are documented in [docs/infrastructure-stack.md](docs/infrastructure-stack.md).
+
 ### Enabling mail via `inbox-vault`
 
 `llm-vault` does not sync Gmail directly. Mail is made available through the optional `[mail_bridge]` section, which reads from a local `inbox-vault` database.

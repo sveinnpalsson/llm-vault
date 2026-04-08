@@ -14,6 +14,7 @@ Recommended:
 
 - `pdftotext` for native-text PDFs
 - a local `vault-ops.toml` in the working directory where you run `vault-ops`
+- `~/.config/llm-vault/secrets.env` for cron or other unattended operator runs
 
 ## Config shape
 
@@ -85,6 +86,86 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 - optional read-only bridge from `inbox-vault`
 - requires a local `inbox-vault` DB path and `INBOX_VAULT_DB_PASSWORD`
 - when disabled, `--source all` excludes mail and explicit `--source mail` errors
+
+## Operator automation
+
+`llm-vault` ships two cron-oriented operator scripts:
+
+- `scripts/run_vault_update_once.sh` runs a single `vault-ops update`
+- `scripts/cron_helper.sh` prints or installs a managed `llm-vault` cron block
+
+The update runner is designed for unattended local operator use:
+
+- resolves the repo root from the script location by default
+- auto-loads `~/.config/llm-vault/secrets.env` when required env vars are missing
+- always requires `LLM_VAULT_DB_PASSWORD`
+- fails clearly if `[mail_bridge].enabled = true` and `INBOX_VAULT_DB_PASSWORD` is not available
+- logs UTC `START`, `OK`, and `FAIL` lines to `logs/vault-update-15m.log`
+
+Suggested secrets file:
+
+```bash
+mkdir -p ~/.config/llm-vault
+cat > ~/.config/llm-vault/secrets.env <<'EOF'
+export LLM_VAULT_DB_PASSWORD='choose-a-strong-passphrase'
+export INBOX_VAULT_DB_PASSWORD='choose-the-inbox-passphrase-if-mail-bridge-is-enabled'
+EOF
+chmod 600 ~/.config/llm-vault/secrets.env
+```
+
+If you do not use the mail bridge, omit `INBOX_VAULT_DB_PASSWORD`.
+
+### Managed cron install
+
+The helper uses a managed block pattern rather than overwriting the full crontab. `--install` removes only the existing `llm-vault` managed block, keeps unrelated entries intact, and writes the refreshed block back.
+
+```bash
+scripts/cron_helper.sh --print-only
+scripts/cron_helper.sh --install
+```
+
+Defaults:
+
+- schedule: `5,20,35,50 * * * *`
+- cron log: `logs/cron.log`
+- secrets file: `~/.config/llm-vault/secrets.env`
+
+The default timing intentionally trails the common `inbox-vault` quarter-hour sync schedule by five minutes.
+
+### Bridged two-job setup with `inbox-vault`
+
+Use Inbox Vault when you want Gmail sync, encrypted local mail storage, and mail-side enrichment to stay separate from `llm-vault`'s docs/photos/mail retrieval layer.
+
+Boundary:
+
+- **Inbox Vault** owns Gmail auth, sync, repair, local enrichment, and the encrypted mail database.
+- **`llm-vault`** reads from Inbox Vault through a read-only mail bridge.
+- Inbox Vault does not ship the agent-facing retrieval surface for this stack; use `llm-vault` for that safe search layer.
+
+Straight-line operator setup:
+
+1. Install and validate `inbox-vault` first.
+2. Run a first successful `inbox-vault update`.
+3. Configure `[mail_bridge]` in `llm-vault` to point at the Inbox Vault DB.
+4. Keep both `LLM_VAULT_DB_PASSWORD` and `INBOX_VAULT_DB_PASSWORD` available to the `llm-vault` runtime.
+5. Schedule the two jobs so Inbox Vault syncs first, then `llm-vault` updates a few minutes later.
+
+Typical pattern:
+
+```bash
+# inbox-vault repo
+scripts/cron_helper.sh --install
+
+# llm-vault repo
+scripts/cron_helper.sh --install
+```
+
+With the default helpers, the jobs land like this:
+
+- `inbox-vault`: `*/15 * * * *`
+- `llm-vault`: `5,20,35,50 * * * *`
+
+That spacing gives Inbox Vault time to finish its incremental mail sync before `llm-vault` reads the bridged mail rows.
 
 ## Minimal validation
 
