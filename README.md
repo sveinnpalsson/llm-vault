@@ -31,7 +31,8 @@ A public-facing redaction results page lives under [`eval/redaction/`](eval/reda
 - `vault-ops` is the operator interface. Use it for indexing, repair, upgrade, maintenance, and other unrestricted admin work.
 - `vault-agent` is the safe agent interface. Use it for status checks and redacted search only.
 
-The OpenClaw plugin is simply the OpenClaw wrapper around `vault-agent`. The plugin allows sandboxed agents without the "exec" tool to still have access to the vault cli. This means it can read redacted private data without being able to request the non-redacted versions. 
+The OpenClaw plugin is just the OpenClaw wrapper around `vault-agent`.
+It exists so agents inside OpenClaw can use the same redacted-only retrieval surface without being given direct `vault-ops` access.
 
 That means the boundary is:
 
@@ -146,7 +147,7 @@ Two operator scripts are included for cron-based updates:
 - `scripts/run_vault_update_once.sh` runs one `vault-ops update` with UTC start/ok/fail logging
 - `scripts/cron_helper.sh` prints or installs a managed cron block without overwriting unrelated crontab entries
 
-The runner auto-resolves the repo root from its own location, loads `~/.config/llm-vault/secrets.env` when required env vars are missing, always requires `LLM_VAULT_DB_PASSWORD`, and also requires `INBOX_VAULT_DB_PASSWORD` when `[mail_bridge]` is enabled in `vault-ops.toml`.
+The runner auto-resolves the repo root from its own location, loads `~/.config/llm-vault/secrets.env` when required env vars are missing, always requires `LLM_VAULT_DB_PASSWORD`, and when `[mail_bridge]` is enabled also requires the env named by `[mail_bridge].password_env` (default: `INBOX_VAULT_DB_PASSWORD`).
 
 Example:
 
@@ -165,7 +166,7 @@ To enable mail:
 1. get `inbox-vault` working locally first
 2. set `[mail_bridge].enabled = true`
 3. point `[mail_bridge].db_path` at the local `inbox-vault` SQLCipher database
-4. make sure `INBOX_VAULT_DB_PASSWORD` is exported for the same shell/runtime
+4. make sure the env named by `[mail_bridge].password_env` is exported for the same shell/runtime (default: `INBOX_VAULT_DB_PASSWORD`)
 5. optionally set `include_accounts = ["you@example.com"]` to limit imported accounts
 
 Then run:
@@ -264,3 +265,7 @@ pytest -q
 ```
 
 Optional bounded live smoke tests remain opt-in through `LLM_VAULT_RUN_LIVE_SMOKE=1`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

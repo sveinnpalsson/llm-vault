@@ -28,7 +28,7 @@ Options:
 Notes:
   - No destructive overwrite by default.
   - --install removes only the managed block markers and re-adds updated entries.
-  - Secrets are sourced at runtime from SECRETS_FILE (default: ~/.config/llm-vault/secrets.env).
+  - If present, SECRETS_FILE is sourced at runtime before the update runner starts.
   - Default schedule runs a few minutes after quarter-hour inbox-vault sync jobs.
 EOF
 }
@@ -41,7 +41,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 HOME=$HOME_DIR
 
 # Incremental llm-vault update. Default timing trails inbox-vault by 5 minutes.
-$UPDATE_SCHEDULE cd "$REPO_DIR" && source "$SECRETS_FILE" && "$UPDATE_SCRIPT" >> "$CRON_LOG_FILE" 2>&1
+$UPDATE_SCHEDULE cd "$REPO_DIR" && { if [[ -f "$SECRETS_FILE" ]]; then source "$SECRETS_FILE"; fi; "$UPDATE_SCRIPT"; } >> "$CRON_LOG_FILE" 2>&1
 $END_MARKER
 EOF
 }
