@@ -34,7 +34,7 @@ resolve_config_path() {
   return 1
 }
 
-config_enables_mail_bridge() {
+get_mail_bridge_password_env() {
   local config_path="$1"
   [[ -n "$config_path" && -f "$config_path" ]] || return 1
   python3 -c '
@@ -46,8 +46,13 @@ path = pathlib.Path(sys.argv[1])
 with path.open("rb") as fh:
     data = tomllib.load(fh)
 mail = data.get("mail_bridge")
-enabled = isinstance(mail, dict) and mail.get("enabled") is True
-raise SystemExit(0 if enabled else 1)
+if not (isinstance(mail, dict) and mail.get("enabled") is True):
+    raise SystemExit(1)
+env_name = mail.get("password_env")
+if isinstance(env_name, str) and env_name.strip():
+    print(env_name.strip())
+else:
+    print("INBOX_VAULT_DB_PASSWORD")
 ' "$config_path"
 }
 
@@ -69,12 +74,16 @@ if CONFIG_PATH="$(resolve_config_path)"; then
 fi
 
 MAIL_BRIDGE_ENABLED=0
-if [[ -n "$CONFIG_PATH" ]] && config_enables_mail_bridge "$CONFIG_PATH"; then
-  MAIL_BRIDGE_ENABLED=1
+MAIL_BRIDGE_PASSWORD_ENV="INBOX_VAULT_DB_PASSWORD"
+if [[ -n "$CONFIG_PATH" ]]; then
+  if mail_bridge_password_env="$(get_mail_bridge_password_env "$CONFIG_PATH")"; then
+    MAIL_BRIDGE_ENABLED=1
+    MAIL_BRIDGE_PASSWORD_ENV="$mail_bridge_password_env"
+  fi
 fi
 
 if [[ -f "$SECRETS_FILE" ]]; then
-  if [[ -z "${LLM_VAULT_DB_PASSWORD:-}" || ( "$MAIL_BRIDGE_ENABLED" -eq 1 && -z "${INBOX_VAULT_DB_PASSWORD:-}" ) ]]; then
+  if [[ -z "${LLM_VAULT_DB_PASSWORD:-}" || ( "$MAIL_BRIDGE_ENABLED" -eq 1 && -z "${!MAIL_BRIDGE_PASSWORD_ENV:-}" ) ]]; then
     # shellcheck disable=SC1090
     source "$SECRETS_FILE"
   fi
@@ -85,11 +94,11 @@ if [[ -z "${LLM_VAULT_DB_PASSWORD:-}" ]]; then
   exit 2
 fi
 
-if [[ "$MAIL_BRIDGE_ENABLED" -eq 1 && -z "${INBOX_VAULT_DB_PASSWORD:-}" ]]; then
+if [[ "$MAIL_BRIDGE_ENABLED" -eq 1 && -z "${!MAIL_BRIDGE_PASSWORD_ENV:-}" ]]; then
   if [[ -n "$CONFIG_PATH" ]]; then
-    log_error "ERROR mail_bridge is enabled in $CONFIG_PATH but INBOX_VAULT_DB_PASSWORD is missing"
+    log_error "ERROR mail_bridge is enabled in $CONFIG_PATH but $MAIL_BRIDGE_PASSWORD_ENV is missing"
   else
-    log_error "ERROR mail_bridge is enabled but INBOX_VAULT_DB_PASSWORD is missing"
+    log_error "ERROR mail_bridge is enabled but $MAIL_BRIDGE_PASSWORD_ENV is missing"
   fi
   exit 2
 fi

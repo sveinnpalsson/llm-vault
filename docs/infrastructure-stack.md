@@ -84,7 +84,7 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 ### Mail bridge
 
 - optional read-only bridge from `inbox-vault`
-- requires a local `inbox-vault` DB path and `INBOX_VAULT_DB_PASSWORD`
+- requires a local `inbox-vault` DB path and the env named by `[mail_bridge].password_env` (default: `INBOX_VAULT_DB_PASSWORD`)
 - when disabled, `--source all` excludes mail and explicit `--source mail` errors
 
 ## Operator automation
@@ -97,9 +97,9 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 The update runner is designed for unattended local operator use:
 
 - resolves the repo root from the script location by default
-- auto-loads `~/.config/llm-vault/secrets.env` when required env vars are missing
+- auto-loads `~/.config/llm-vault/secrets.env` when that file exists and required env vars are missing
 - always requires `LLM_VAULT_DB_PASSWORD`
-- fails clearly if `[mail_bridge].enabled = true` and `INBOX_VAULT_DB_PASSWORD` is not available
+- fails clearly if `[mail_bridge].enabled = true` and the env named by `[mail_bridge].password_env` is not available
 - logs UTC `START`, `OK`, and `FAIL` lines to `logs/vault-update-15m.log`
 
 Suggested secrets file:
@@ -113,7 +113,7 @@ EOF
 chmod 600 ~/.config/llm-vault/secrets.env
 ```
 
-If you do not use the mail bridge, omit `INBOX_VAULT_DB_PASSWORD`.
+If you do not use the mail bridge, omit the mail-bridge password env. If you changed `[mail_bridge].password_env`, export that name instead of `INBOX_VAULT_DB_PASSWORD`.
 
 ### Managed cron install
 
@@ -147,7 +147,7 @@ Straight-line operator setup:
 1. Install and validate `inbox-vault` first.
 2. Run a first successful `inbox-vault update`.
 3. Configure `[mail_bridge]` in `llm-vault` to point at the Inbox Vault DB.
-4. Keep both `LLM_VAULT_DB_PASSWORD` and `INBOX_VAULT_DB_PASSWORD` available to the `llm-vault` runtime.
+4. Keep `LLM_VAULT_DB_PASSWORD` and the env named by `[mail_bridge].password_env` available to the `llm-vault` runtime.
 5. Schedule the two jobs so Inbox Vault syncs first, then `llm-vault` updates a few minutes later.
 
 Typical pattern:
