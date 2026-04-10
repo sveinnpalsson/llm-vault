@@ -76,7 +76,7 @@ Optional:
 
 - a local photo-analysis service
 - a local PDF parsing service for documents
-- `inbox-vault` bridge for gmail
+- [`inbox-vault`](https://github.com/sveinnpalsson/inbox-vault) bridge for gmail
 
 ## Example `vault-ops.toml`
 
@@ -161,9 +161,9 @@ scripts/cron_helper.sh --install
 
 If you use `inbox-vault` as a mail source, keep it as the first job and run `llm-vault` a few minutes later. The operator setup and bridged two-job flow are documented in [docs/infrastructure-stack.md](docs/infrastructure-stack.md).
 
-### Enabling mail via `inbox-vault`
+### Enabling mail via [`inbox-vault`](https://github.com/sveinnpalsson/inbox-vault)
 
-`llm-vault` does not sync Gmail directly. Mail is made available through the optional `[mail_bridge]` section, which reads from a local `inbox-vault` database.
+`llm-vault` does not sync Gmail directly. Mail is made available through the optional `[mail_bridge]` section, which reads from a local [`inbox-vault`](https://github.com/sveinnpalsson/inbox-vault) database.
 
 To enable mail:
 
