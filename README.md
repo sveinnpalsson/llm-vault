@@ -1,5 +1,9 @@
 # llm-vault
 
+[![CI](https://github.com/sveinnpalsson/llm-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/sveinnpalsson/llm-vault/actions)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Privacy-first local vault for personal documents, photos, and mail.
 
 `llm-vault` builds an encrypted local registry and vector index over local content, then exposes:
