@@ -343,7 +343,7 @@ class PersistentRedactionMap:
             key=lambda item: len(item[1]),
             reverse=True,
         ):
-            exact_pattern = re.compile(re.escape(value), flags=re.I)
+            exact_pattern = _compile_exact_value_pattern(value)
             out = exact_pattern.sub(placeholder, out)
             whitespace_pattern = _compile_whitespace_tolerant_pattern(value)
             if whitespace_pattern is not None:
@@ -433,7 +433,7 @@ def trace_redaction_spans(
         reverse=True,
     ):
         key_name = str(table.placeholder_to_key.get(placeholder) or "CUSTOM")
-        exact_pattern = re.compile(re.escape(value), flags=re.I)
+        exact_pattern = _compile_exact_value_pattern(value)
         for match in exact_pattern.finditer(source):
             _mark_span(match.start(), match.end(), key_name=key_name, placeholder=placeholder)
 
@@ -831,6 +831,13 @@ def _replace_partial_boundary(text: str, value: str, placeholder: str) -> str:
             text = placeholder + text[k:]
             break
     return text
+
+
+def _compile_exact_value_pattern(value: str) -> re.Pattern[str]:
+    normalized = _normalize_candidate_display(value)
+    prefix = r"(?<!\w)" if normalized and re.match(r"^\w", normalized) else ""
+    suffix = r"(?!\w)" if normalized and re.search(r"\w$", normalized) else ""
+    return re.compile(f"{prefix}{re.escape(value)}{suffix}", flags=re.I)
 
 
 def _compile_whitespace_tolerant_pattern(value: str) -> re.Pattern[str] | None:

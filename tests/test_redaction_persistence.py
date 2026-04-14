@@ -186,6 +186,75 @@ def test_hybrid_redaction_expands_composed_address_model_candidates(monkeypatch)
     assert {"58", "Kings Lane", "Norwich", "ENG", "NR1 3PS"}.issubset(originals)
 
 
+def test_hybrid_redaction_does_not_replace_short_address_values_inside_other_words(monkeypatch) -> None:
+    from vault_redaction import RedactionCandidate
+
+    def fake_model_detect_candidates(text: str, *, cfg: RedactionConfig, source: str):
+        return [
+            RedactionCandidate(
+                key_name="ADDRESS",
+                value="Hill Road, Louisville-Jefferson County, KY 40241",
+                source=source,
+            ),
+            RedactionCandidate(
+                key_name="ADDRESS",
+                value="46 Frisco Peninsula Day Use Loop, Frisco, CO 80435",
+                source=source,
+            ),
+            RedactionCandidate(
+                key_name="ADDRESS",
+                value="920 West US Highway 180, Palo Pinto, TX 76484",
+                source=source,
+            ),
+            RedactionCandidate(
+                key_name="CUSTOM",
+                value="702.26.8505",
+                source=source,
+            ),
+            RedactionCandidate(
+                key_name="CUSTOM",
+                value="135-85-9196",
+                source=source,
+            ),
+        ]
+
+    monkeypatch.setattr("vault_redaction._model_detect_candidates", fake_model_detect_candidates)
+    table = PersistentRedactionMap()
+    text = (
+        'Hill Road\n'
+        'City: Louisville-Jefferson County\n'
+        'State: KY\n'
+        'Postcode: 40241\n\n'
+        '2. Social Security Number: 702.26.8505\n'
+        'Country: US\n'
+        'Building: 46\n'
+        'Street: Frisco Peninsula Day Use Loop\n'
+        'City: Frisco\n'
+        'State: CO\n'
+        'Postcode: 80435\n\n'
+        '3. Social Security Number: 135-85-9196\n'
+        'Country: US\n'
+        'Building: 920\n'
+        'Street: West US Highway 180\n'
+        'City: Palo Pinto\n'
+        'State: TX\n'
+        'Postcode: 76484\n'
+    )
+    out = redact_chunks_with_persistent_map(
+        [text],
+        mode="hybrid",
+        table=table,
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+    )
+
+    redacted = out.chunk_text_redacted[0]
+    assert "Post<REDACTED" not in redacted
+    assert "<REDACTED_AC<REDACTED" not in redacted
+    assert "<REDACTED_ADDRESS_" in redacted
+    assert "Country: US" in redacted
+    assert "State: <REDACTED_ADDRESS_" in redacted
+
+
 def test_hybrid_redaction_keeps_strong_custom_model_candidates(monkeypatch) -> None:
     from vault_redaction import RedactionCandidate
 
