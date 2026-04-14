@@ -10,6 +10,7 @@ from vault_redaction import (
     PersistentRedactionMap,
     RedactionConfig,
     _regex_detect_candidates,
+    is_persistent_redaction_value_allowed,
     is_redaction_value_allowed,
     redact_chunks_with_persistent_map,
 )
@@ -33,6 +34,7 @@ def test_redaction_placeholder_reuse_across_chunks() -> None:
     assert out.items_redacted >= 2
     assert out.entries_total >= 2
     assert len(out.inserted_entries) >= 2
+    assert len(out.persisted_entries) >= 2
     assert out.candidate_sources["regex"] >= 2
 
     first = out.chunk_text_redacted[0]
@@ -92,13 +94,25 @@ def test_redaction_value_filters_reject_common_false_positives() -> None:
     assert not is_redaction_value_allowed("PERSON", "LAST NAME")
     assert not is_redaction_value_allowed("PERSON", "name")
     assert not is_redaction_value_allowed("PERSON", "Two individuals")
+    assert not is_redaction_value_allowed("PERSON", "Student E")
     assert not is_redaction_value_allowed("CUSTOM", "employee id")
     assert not is_redaction_value_allowed("CUSTOM", "username")
     assert not is_redaction_value_allowed("CUSTOM", "abcdef")
+    assert not is_redaction_value_allowed("CUSTOM", "Agent1")
 
     assert is_redaction_value_allowed("EMAIL", "amy@example.com")
     assert is_redaction_value_allowed("PHONE", "617-555-1212")
     assert is_redaction_value_allowed("PERSON", "Amy Doe")
+    assert is_redaction_value_allowed(
+        "PERSON",
+        "Tempobono",
+        source_text='6, "NA","NA","NA","NA","LF","Tempobono"\n7, "NA","NA","NA","NA","LG","Rotstein"',
+    )
+    assert is_redaction_value_allowed(
+        "PERSON",
+        "Cesnulis",
+        source_text='expert veterinarians ([Cesnulis], [Kakiashvili], [Ponomarov], [Sobhan])',
+    )
     assert is_redaction_value_allowed("ADDRESS", "123 Main St")
     assert is_redaction_value_allowed("ADDRESS", "ENG", source_text='State: "ENG"')
     assert is_redaction_value_allowed("ADDRESS", "58", source_text='Building Number: "58"')
@@ -114,6 +128,19 @@ def test_redaction_value_filters_reject_common_false_positives() -> None:
     assert not is_redaction_value_allowed("CUSTOM", "employee id")
 
 
+def test_persistent_redaction_filters_stay_stricter_than_runtime() -> None:
+    assert is_redaction_value_allowed("ADDRESS", "Boston", source_text='City: "Boston"')
+    assert is_redaction_value_allowed("ADDRESS", "58", source_text='Building Number: "58"')
+    assert is_redaction_value_allowed("ADDRESS", "ENG", source_text='State: "ENG"')
+    assert is_redaction_value_allowed("PERSON", "Tempobono", source_text='Last Name: "Tempobono"')
+    assert not is_persistent_redaction_value_allowed("ADDRESS", "Boston")
+    assert not is_persistent_redaction_value_allowed("ADDRESS", "58")
+    assert not is_persistent_redaction_value_allowed("ADDRESS", "ENG")
+    assert is_persistent_redaction_value_allowed("PERSON", "Tempobono")
+    assert is_persistent_redaction_value_allowed("ADDRESS", "123 Main St")
+    assert is_persistent_redaction_value_allowed("ADDRESS", "58 Kings Lane, Norwich")
+
+
 def test_redaction_map_ignores_invalid_persisted_entries() -> None:
     table = PersistentRedactionMap.from_rows(
         [
@@ -126,6 +153,14 @@ def test_redaction_map_ignores_invalid_persisted_entries() -> None:
     assert "<REDACTED_EMAIL_A>" in table.placeholder_to_value
     assert "<REDACTED_ADDRESS_A>" not in table.placeholder_to_value
     assert "<REDACTED_PERSON_A>" not in table.placeholder_to_value
+
+
+def test_redaction_map_keeps_valid_single_token_person_entries() -> None:
+    table = PersistentRedactionMap.from_rows(
+        [("PERSON", "<REDACTED_PERSON_A>", "tempobono", "Tempobono")]
+    )
+
+    assert table.placeholder_to_value["<REDACTED_PERSON_A>"] == "Tempobono"
 
 
 def test_hybrid_redaction_filters_weak_model_candidates(monkeypatch) -> None:
@@ -184,6 +219,9 @@ def test_hybrid_redaction_expands_composed_address_model_candidates(monkeypatch)
 
     originals = {entry["original_value"] for entry in out.inserted_entries}
     assert {"58", "Kings Lane", "Norwich", "ENG", "NR1 3PS"}.issubset(originals)
+    assert [(entry["key_name"], entry["original_value"]) for entry in out.persisted_entries] == [
+        ("ADDRESS", "Kings Lane"),
+    ]
 
 
 def test_hybrid_redaction_does_not_replace_short_address_values_inside_other_words(monkeypatch) -> None:
@@ -253,6 +291,105 @@ def test_hybrid_redaction_does_not_replace_short_address_values_inside_other_wor
     assert "<REDACTED_ADDRESS_" in redacted
     assert "Country: US" in redacted
     assert "State: <REDACTED_ADDRESS_" in redacted
+
+
+def test_upsert_redaction_entries_skips_weak_address_fragments(tmp_path: Path) -> None:
+    db_path = tmp_path / "state" / "vault_registry.db"
+    conn = connect_vault_db(db_path, ensure_parent=True)
+    try:
+        ensure_redaction_table(conn)
+        total = upsert_redaction_entries(
+            conn,
+            scope_type="vault",
+            scope_id="global",
+            entries=[
+                {
+                    "key_name": "ADDRESS",
+                    "placeholder": "<REDACTED_ADDRESS_A>",
+                    "value_norm": "58",
+                    "original_value": "58",
+                    "source_mode": "llm_chunk",
+                },
+                {
+                    "key_name": "ADDRESS",
+                    "placeholder": "<REDACTED_ADDRESS_B>",
+                    "value_norm": "boston",
+                    "original_value": "Boston",
+                    "source_mode": "llm_chunk",
+                },
+                {
+                    "key_name": "ADDRESS",
+                    "placeholder": "<REDACTED_ADDRESS_C>",
+                    "value_norm": "123 main st",
+                    "original_value": "123 Main St",
+                    "source_mode": "llm_chunk",
+                },
+            ],
+        )
+        assert total == 1
+        rows = conn.execute(
+            "SELECT key_name, original_value FROM redaction_entries ORDER BY key_name, original_value"
+        ).fetchall()
+        assert [(str(row[0]), str(row[1])) for row in rows] == [
+            ("ADDRESS", "123 Main St"),
+        ]
+    finally:
+        conn.close()
+
+
+def test_hybrid_redaction_ignores_generic_role_labels_from_model(monkeypatch) -> None:
+    from vault_redaction import RedactionCandidate
+
+    def fake_model_detect_candidates(text: str, *, cfg: RedactionConfig, source: str):
+        return [
+            RedactionCandidate(key_name="PERSON", value="Student E", source=source),
+            RedactionCandidate(key_name="CUSTOM", value="Agent1", source=source),
+            RedactionCandidate(key_name="PERSON", value="Amy Doe", source=source),
+        ]
+
+    monkeypatch.setattr("vault_redaction._model_detect_candidates", fake_model_detect_candidates)
+    table = PersistentRedactionMap()
+    out = redact_chunks_with_persistent_map(
+        ["Student E met Agent1 before Amy Doe joined."],
+        mode="hybrid",
+        table=table,
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+    )
+
+    assert [(entry["key_name"], entry["original_value"]) for entry in out.inserted_entries] == [
+        ("PERSON", "Amy Doe"),
+    ]
+
+
+def test_hybrid_redaction_accepts_single_token_person_list_context(monkeypatch) -> None:
+    from vault_redaction import RedactionCandidate
+
+    text = (
+        "Proposal Details:\n"
+        "1. **Animal Welfare Taskforce:** Establish a dedicated taskforce comprising of expert veterinarians "
+        "([Cesnulis], [Kakiashvili], [Ponomarov], [Sobhan]) to oversee the protection and care of animals."
+    )
+
+    def fake_model_detect_candidates(chunk: str, *, cfg: RedactionConfig, source: str):
+        assert chunk == text
+        return [
+            RedactionCandidate(key_name="PERSON", value="Cesnulis", source=source),
+            RedactionCandidate(key_name="PERSON", value="Kakiashvili", source=source),
+            RedactionCandidate(key_name="PERSON", value="Ponomarov", source=source),
+            RedactionCandidate(key_name="PERSON", value="Sobhan", source=source),
+        ]
+
+    monkeypatch.setattr("vault_redaction._model_detect_candidates", fake_model_detect_candidates)
+    table = PersistentRedactionMap()
+    out = redact_chunks_with_persistent_map(
+        [text],
+        mode="hybrid",
+        table=table,
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+    )
+
+    assert len(out.inserted_entries) == 4
+    assert out.chunk_text_redacted[0].count("<REDACTED_PERSON_") == 4
 
 
 def test_hybrid_redaction_keeps_strong_custom_model_candidates(monkeypatch) -> None:
@@ -368,6 +505,36 @@ def test_hybrid_redaction_keeps_handle_like_customs_out_of_account(monkeypatch) 
         ("CUSTOM", "wsfdkmi9214"),
         ("CUSTOM", "maugeon1942"),
         ("ACCOUNT", "ZXCV99887766"),
+    ]
+
+
+def test_hybrid_redaction_remaps_phone_like_value_to_account_in_account_field(monkeypatch) -> None:
+    from vault_redaction import RedactionCandidate
+
+    text = 'Social Security Number: 940-965-2328\nTelephone Number: 617-555-1212\n'
+
+    def fake_model_detect_candidates(chunk: str, *, cfg: RedactionConfig, source: str):
+        assert chunk == text
+        return [
+            RedactionCandidate(key_name="PHONE", value="940-965-2328", source=source),
+            RedactionCandidate(key_name="PHONE", value="617-555-1212", source=source),
+        ]
+
+    monkeypatch.setattr("vault_redaction._model_detect_candidates", fake_model_detect_candidates)
+    table = PersistentRedactionMap()
+    out = redact_chunks_with_persistent_map(
+        [text],
+        mode="hybrid",
+        table=table,
+        cfg=RedactionConfig(mode="hybrid", enabled=True),
+    )
+
+    seen = [(entry["key_name"], entry["original_value"]) for entry in out.inserted_entries]
+    assert ("ACCOUNT", "940-965-2328") in seen
+    assert ("PHONE", "617-555-1212") in seen
+    assert [(entry["key_name"], entry["original_value"]) for entry in out.persisted_entries] == [
+        ("ACCOUNT", "940-965-2328"),
+        ("PHONE", "617-555-1212"),
     ]
 
 

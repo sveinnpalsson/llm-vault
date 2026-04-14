@@ -143,8 +143,20 @@ _WRAPPING_DELIMITER_PAIRS = {
 _PERSON_FIELD_CONTEXT_PATTERN = re.compile(
     r"(?i)(?:first\s*name|last\s*name|full\s*name|given\s*name|middle\s*name|family\s*name|surname|lastname|firstname|fullname|givenname|middlename|familyname)"
 )
+_PERSON_LIST_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:such\s+as|including|include|comprising(?:\s+of)?|consisting\s+of|comprised\s+of|team\s+member|expert\s+veterinarian|veterinarians|members?)"
+)
 _ADDRESS_FIELD_CONTEXT_PATTERN = re.compile(
     r"(?i)(?:country|building(?:\s+number)?|street|city|state|postcode|postal\s*code|zip|address)"
+)
+_ACCOUNT_FIELD_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:account|acct|iban|routing|card|ssn|social\s+security|passport|passport\s+number|id\s+number|id\s+card|student\s+id|application\s+id|identifier|tax\s*id|tin)"
+)
+_ANY_FIELD_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:first\s*name|last\s*name|full\s*name|given\s*name|middle\s*name|family\s*name|surname|lastname|firstname|fullname|givenname|middlename|familyname|"
+    r"country|building(?:\s+number)?|street|city|state|postcode|postal\s*code|zip|address|"
+    r"email|e-mail|phone|telephone|contact\s+number|mobile|fax|url|website|"
+    r"account|acct|iban|routing|card|ssn|social\s+security|passport|passport\s+number|id\s+number|id\s+card|student\s+id|application\s+id|identifier|tax\s*id|tin)"
 )
 _ACCOUNT_PREFIX_PATTERN = re.compile(
     r"(?i)^(?:acct|account|iban|routing|card|ssn|passport|idcard|social|taxid|tax-id|tin)[\s:_#-]*[A-Z0-9]"
@@ -177,6 +189,21 @@ _ADDRESS_HINTS = {
     "apartment",
     "box",
     "po",
+}
+_GENERIC_ROLE_PREFIXES = {
+    "agent",
+    "student",
+    "customer",
+    "applicant",
+    "presenter",
+    "learner",
+    "participant",
+    "representative",
+    "user",
+    "employee",
+    "member",
+    "client",
+    "patient",
 }
 _STATE_OR_REGION_CODES = {
     "al",
@@ -271,6 +298,7 @@ class RedactionCandidate:
 class RedactionRunResult:
     chunk_text_redacted: list[str]
     inserted_entries: list[dict[str, str]]
+    persisted_entries: list[dict[str, str]]
     applied_spans_by_chunk: list[list["AppliedRedactionSpan"]]
     entries_total: int
     items_redacted: int
@@ -297,7 +325,7 @@ class PersistentRedactionMap:
         obj = cls()
         for key_name, placeholder, value_norm, original_value in rows:
             key = _normalize_key_name(key_name)
-            if not is_redaction_value_allowed(key, original_value):
+            if not is_persistent_redaction_value_allowed(key, original_value):
                 continue
             obj.value_to_placeholder[str(value_norm)] = str(placeholder)
             obj.placeholder_to_value[str(placeholder)] = str(original_value)
@@ -537,10 +565,45 @@ def _has_strong_person_field_context(display: str, source_text: str | None) -> b
     if not source or not display:
         return False
     for match in re.finditer(re.escape(display), source, flags=re.I):
-        start = max(0, match.start() - 48)
-        end = min(len(source), match.end() + 16)
+        prefix = _field_local_prefix(source, match.start())
+        if _has_field_local_context(prefix, _PERSON_FIELD_CONTEXT_PATTERN):
+            return True
+    return False
+
+
+def _has_person_tabular_context(display: str, source_text: str | None) -> bool:
+    source = str(source_text or "")
+    if not source or not display:
+        return False
+    for match in re.finditer(re.escape(display), source, flags=re.I):
+        line = _line_window(source, match.start(), match.end())
+        quoted_tokens = re.findall(r'"([^"\n]{1,64})"', line)
+        if len(quoted_tokens) >= 3 and any(display.lower() == token.strip().lower() for token in quoted_tokens):
+            return True
+        if line.count(",") >= 4 and re.search(rf'(^|[,\t])\s*"?{re.escape(display)}"?\s*($|[,\t])', line, flags=re.I):
+            return True
+    return False
+
+
+def _has_person_list_context(display: str, source_text: str | None) -> bool:
+    source = str(source_text or "")
+    if not source or not display:
+        return False
+    for match in re.finditer(re.escape(display), source, flags=re.I):
+        start = max(0, match.start() - 96)
+        end = min(len(source), match.end() + 96)
         window = source[start:end]
-        if _PERSON_FIELD_CONTEXT_PATTERN.search(window):
+        unique_titleish = {token.lower() for token in re.findall(r"[A-Z][A-Za-z'’-]{2,}", window)}
+        if len(unique_titleish) < 2:
+            continue
+        if _PERSON_LIST_CONTEXT_PATTERN.search(window):
+            if window.count("[") >= 2 and window.count("]") >= 2:
+                return True
+            if window.count(",") >= 2 and (window.count('"') >= 4 or window.count("(") >= 1):
+                return True
+        if window.count("[") >= 2 and window.count("]") >= 2:
+            return True
+        if window.count('"') >= 4 and window.count(",") >= 4 and len(unique_titleish) >= 3:
             return True
     return False
 
@@ -550,12 +613,124 @@ def _has_strong_address_field_context(display: str, source_text: str | None) -> 
     if not source or not display:
         return False
     for match in re.finditer(re.escape(display), source, flags=re.I):
-        start = max(0, match.start() - 64)
-        end = min(len(source), match.end() + 24)
-        window = source[start:end]
-        if _ADDRESS_FIELD_CONTEXT_PATTERN.search(window):
+        prefix = _field_local_prefix(source, match.start())
+        if _has_field_local_context(prefix, _ADDRESS_FIELD_CONTEXT_PATTERN):
             return True
     return False
+
+
+def _has_strong_account_field_context(display: str, source_text: str | None) -> bool:
+    source = str(source_text or "")
+    if not source or not display:
+        return False
+    for match in re.finditer(re.escape(display), source, flags=re.I):
+        prefix = _field_local_prefix(source, match.start())
+        if _has_field_local_context(prefix, _ACCOUNT_FIELD_CONTEXT_PATTERN):
+            return True
+    return False
+
+
+def _line_window(source: str, start: int, end: int) -> str:
+    line_start = source.rfind("\n", 0, start) + 1
+    line_end = source.find("\n", end)
+    if line_end < 0:
+        line_end = len(source)
+    return source[line_start:line_end]
+
+
+def _field_local_prefix(source: str, match_start: int) -> str:
+    line_start = source.rfind("\n", 0, match_start) + 1
+    prefix = source[line_start:match_start]
+    return re.sub(r"<[^>]+>", "", prefix)
+
+
+def _has_field_local_context(prefix: str, target_pattern: re.Pattern[str]) -> bool:
+    labels = list(_ANY_FIELD_CONTEXT_PATTERN.finditer(prefix))
+    if not labels:
+        return False
+    target_labels = list(target_pattern.finditer(prefix))
+    if not target_labels:
+        return False
+    last_label = labels[-1]
+    target_label = target_labels[-1]
+    if target_label.start() != last_label.start():
+        return False
+    trailing = prefix[target_label.end() :]
+    trailing = re.sub(r"\b[A-Za-z_][A-Za-z0-9_:-]*\s*=", "", trailing)
+    return bool(re.fullmatch(r'[\s:=#\-"\'\[\]\(\)<>/]*', trailing))
+
+
+def _looks_like_generic_role_identifier(display: str) -> bool:
+    compact = display.strip()
+    if not compact:
+        return False
+    lower = compact.lower()
+    if re.fullmatch(r"(?:" + "|".join(sorted(_GENERIC_ROLE_PREFIXES)) + r")\d{1,3}", lower):
+        return True
+    parts = compact.split()
+    if len(parts) != 2:
+        return False
+    prefix = parts[0].lower()
+    suffix = parts[1]
+    if prefix not in _GENERIC_ROLE_PREFIXES:
+        return False
+    return bool(re.fullmatch(r"(?:[A-Z]|\d{1,3}|[A-Z]\d{1,3}|\d{1,3}[A-Z])", suffix))
+
+
+def _is_persistent_address_value(display: str) -> bool:
+    lowered = display.lower().strip(" .,:;")
+    if not lowered:
+        return False
+    if lowered in _STATE_OR_REGION_CODES:
+        return False
+    if re.fullmatch(r"\d+[A-Za-z0-9-]*", display):
+        return False
+    if re.fullmatch(r"[A-Za-z][A-Za-z'’-]+", display):
+        return False
+    word_tokens = {
+        token.lower().strip(".,")
+        for token in re.findall(r"[A-Za-z0-9#]+", display)
+    }
+    if "po" in word_tokens and "box" in word_tokens:
+        return True
+    if word_tokens & _ADDRESS_HINTS:
+        return True
+    if "," in display and len(word_tokens) >= 2:
+        return True
+    return False
+
+
+def _is_persistent_person_value(display: str) -> bool:
+    if any(ch.isdigit() for ch in display):
+        return False
+    lowered = display.lower()
+    if lowered in _GENERIC_LABELS or _looks_like_generic_role_identifier(display):
+        return False
+    if ":" in display or "@" in display or "/" in display:
+        return False
+    tokens = re.findall(r"[A-Za-z][A-Za-z'’-]*", display)
+    if not tokens:
+        return False
+    if any(token.lower() in _GENERIC_PERSON_TOKENS for token in tokens):
+        return False
+    return sum(len(token) for token in tokens) >= 5
+
+
+def is_persistent_redaction_value_allowed(
+    key_name: str,
+    value: str,
+    *,
+    source_text: str | None = None,
+) -> bool:
+    key = _normalize_key_name(key_name)
+    display = _normalize_candidate_display(value)
+    if not display:
+        return False
+    if key == "ADDRESS":
+        return is_redaction_value_allowed(key, value, source_text=source_text) and _is_persistent_address_value(display)
+    if key == "PERSON":
+        return _is_persistent_person_value(display)
+    return is_redaction_value_allowed(key, value, source_text=source_text)
 
 
 def _expand_address_literals(display: str, source_text: str | None) -> list[str]:
@@ -679,18 +854,28 @@ def _is_allowed_custom_value(display: str) -> bool:
     return False
 
 
-def _remap_model_candidate_key_name(key_name: str, value: str) -> str:
+def _remap_model_candidate_key_name(
+    key_name: str,
+    value: str,
+    *,
+    source_text: str | None = None,
+) -> str:
     key = _normalize_key_name(key_name)
     display = _normalize_candidate_display(value)
     if not display:
         return key
+
+    if _has_strong_account_field_context(display, source_text) and is_redaction_value_allowed(
+        "ACCOUNT", display, source_text=source_text
+    ):
+        return "ACCOUNT"
 
     if key == "PERSON" and _is_allowed_custom_value(display):
         return "CUSTOM"
 
     if key == "CUSTOM":
         for canonical_key in ("EMAIL", "PHONE", "URL"):
-            if is_redaction_value_allowed(canonical_key, display):
+            if is_redaction_value_allowed(canonical_key, display, source_text=source_text):
                 return canonical_key
         if _is_obvious_account_value(display):
             return "ACCOUNT"
@@ -746,18 +931,28 @@ def is_redaction_value_allowed(
         if any(ch.isdigit() for ch in display):
             return False
         lowered = display.lower()
-        if lowered in _GENERIC_LABELS:
+        if lowered in _GENERIC_LABELS or _looks_like_generic_role_identifier(display):
             return False
         if ":" in display or "@" in display or "/" in display:
             return False
         tokens = re.findall(r"[A-Za-z][A-Za-z'’-]*", display)
-        if len(tokens) < 2 and not _has_strong_person_field_context(display, source_text):
+        has_context = (
+            _has_strong_person_field_context(display, source_text)
+            or _has_person_tabular_context(display, source_text)
+            or _has_person_list_context(display, source_text)
+        )
+        if len(tokens) < 2 and not has_context:
             return False
         if any(token.lower() in _GENERIC_PERSON_TOKENS for token in tokens):
             return False
         if sum(len(token) for token in tokens) < 5:
             return False
         return True
+
+    if key == "CUSTOM":
+        if _looks_like_generic_role_identifier(display):
+            return False
+        return _is_allowed_custom_value(display)
 
     if key == "ADDRESS":
         lowered = display.lower().strip(" .,:;")
@@ -782,9 +977,6 @@ def is_redaction_value_allowed(
         if word_tokens & _ADDRESS_HINTS:
             return True
         return contextual and any(ch.isalpha() for ch in display)
-
-    if key == "CUSTOM":
-        return _is_allowed_custom_value(display)
 
     return False
 
@@ -1117,7 +1309,11 @@ def _model_detect_candidates(
         for val in values:
             sval = str(val or "").strip()
             display = _normalize_candidate_display(sval)
-            mapped_key_name = _remap_model_candidate_key_name(key_name, display)
+            mapped_key_name = _remap_model_candidate_key_name(
+                key_name,
+                display,
+                source_text=text,
+            )
             candidate_values = [display]
             if mapped_key_name == "ADDRESS" and display and not _candidate_present_in_text("ADDRESS", display, text):
                 expanded = _expand_address_literals(display, text)
@@ -1147,6 +1343,7 @@ def redact_chunks_with_persistent_map(
         selected_mode = "hybrid"
 
     inserted_entries: list[dict[str, str]] = []
+    persisted_entries: list[dict[str, str]] = []
     redacted_items = 0
     candidate_sources: Counter[str] = Counter()
 
@@ -1157,7 +1354,11 @@ def redact_chunks_with_persistent_map(
             source_name = str(cand.source or "")
             key_name = cand.key_name
             if source_name.startswith("llm"):
-                key_name = _remap_model_candidate_key_name(cand.key_name, cand.value)
+                key_name = _remap_model_candidate_key_name(
+                    cand.key_name,
+                    cand.value,
+                    source_text=text,
+                )
             candidate_values = [cand.value]
             if (
                 source_name.startswith("llm")
@@ -1174,15 +1375,16 @@ def redact_chunks_with_persistent_map(
                     source_text=text if source_name.startswith("llm") else None,
                 )
                 if placeholder and is_new:
-                    inserted_entries.append(
-                        {
-                            "key_name": _normalize_key_name(key_name),
-                            "placeholder": placeholder,
-                            "value_norm": value_norm,
-                            "original_value": candidate_value,
-                            "source_mode": cand.source,
-                        }
-                    )
+                    entry = {
+                        "key_name": _normalize_key_name(key_name),
+                        "placeholder": placeholder,
+                        "value_norm": value_norm,
+                        "original_value": candidate_value,
+                        "source_mode": cand.source,
+                    }
+                    inserted_entries.append(entry)
+                    if is_persistent_redaction_value_allowed(key_name, candidate_value, source_text=text):
+                        persisted_entries.append(entry)
 
     for text in chunks:
         _register(_regex_detect_candidates(text))
@@ -1211,6 +1413,7 @@ def redact_chunks_with_persistent_map(
     return RedactionRunResult(
         chunk_text_redacted=redacted_chunks,
         inserted_entries=inserted_entries,
+        persisted_entries=persisted_entries,
         applied_spans_by_chunk=applied_spans_by_chunk,
         entries_total=len(table.value_to_placeholder),
         items_redacted=redacted_items,

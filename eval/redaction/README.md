@@ -9,14 +9,14 @@ The goal of this evaluation work is straightforward:
 - measure the tradeoff between missed redactions and over-redaction
 - make it easy to compare a simple baseline (`regex`) against model-assisted redaction (`hybrid`)
 
-At the moment, the checked-in model-backed results use **`qwen3-14b`** in hybrid mode.
+At the moment, the validated checked-in model-backed results use **`gemma4-26b`** in hybrid mode.
 
 ## Method
 
-The current full comparisons use locally prepared fixtures derived from the public AI4Privacy dataset:
+The current validated comparison uses a locally prepared fixture derived from the public AI4Privacy dataset:
 
 - dataset: [`ai4privacy/pii-masking-300k`](https://huggingface.co/datasets/ai4privacy/pii-masking-300k)
-- splits used here: validation and train
+- split used here: validation
 - modes compared: `regex` and `hybrid`
 
 We report the benchmark in two ways.
@@ -51,25 +51,21 @@ Reported counts:
 
 ## Current Results
 
-The current checked-in full results compare `regex` against `hybrid` on both validation and train.
+The current checked-in validated result compares `regex` against `hybrid` on the validation fixture in `tmp/redaction-eval/reports/ai4privacy-validation-map-downstream-pass-regex-vs-hybrid.json`.
 
 ### Label-aware results
 
 | Split | Mode | Precision | Recall | F1 | F2 |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Validation | Regex | 0.7150 | 0.1619 | 0.2640 | 0.1915 |
-| Validation | Hybrid | 0.7412 | 0.3375 | 0.4639 | 0.3788 |
-| Train | Regex | 0.7039 | 0.1564 | 0.2559 | 0.1852 |
-| Train | Hybrid | 0.7333 | 0.3229 | 0.4484 | 0.3636 |
+| Validation | Hybrid | 0.8332 | 0.7253 | 0.7755 | 0.7446 |
 
 ### Binary results
 
 | Split | Mode | Hidden any label | Still visible | Hidden under wrong label | Over-redacted | Hide rate |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | Validation | Regex | 929 | 3272 | 314 | 50 | 0.2211 |
-| Validation | Hybrid | 1952 | 2249 | 471 | 135 | 0.4647 |
-| Train | Regex | 3553 | 12595 | 1374 | 170 | 0.2200 |
-| Train | Hybrid | 7625 | 8523 | 2016 | 429 | 0.4722 |
+| Validation | Hybrid | 3546 | 655 | 483 | 227 | 0.8441 |
 
 ## Summary
 
@@ -82,35 +78,26 @@ The short version is:
 
 Validation:
 
-- F1 improves from **0.2640** to **0.4639**
-- Recall improves from **0.1619** to **0.3375**
-- Hide rate improves from **0.2211** to **0.4647**
-- Visible leaks drop from **3272** to **2249**
+- F1 improves from **0.2640** to **0.7755**
+- Recall improves from **0.1619** to **0.7253**
+- Hide rate improves from **0.2211** to **0.8441**
+- Visible leaks drop from **3272** to **655**
 
-Train:
-
-- F1 improves from **0.2559** to **0.4484**
-- Recall improves from **0.1564** to **0.3229**
-- Hide rate improves from **0.2200** to **0.4722**
-- Visible leaks drop from **12595** to **8523**
-
-That is meaningful progress, but it still leaves a large amount of sensitive content visible.
+That is a much stronger result than the earlier reported numbers, but it still leaves visible leakage and materially higher over-redaction than the regex baseline.
 
 ## Where the system still struggles
 
-The main weak spots are consistent across the full runs:
+The main weak spots in the validated validation run are:
 
-- **Account and ID-like fields** remain the largest miss bucket.
-- **Custom handles and usernames** improve very little.
-- **Addresses** improve, but still leak too often.
-- **Person names** still miss often enough to matter.
-- **Phone numbers** are the biggest source of over-redaction.
+- **Custom handles and usernames** still leak in a noticeable share of cases.
+- **Account and ID-like fields** remain sensitive to labeling and field-context errors.
+- **Over-redaction increases** in hybrid mode even while leakage drops sharply.
 
 So the current story is not “problem solved.” It is:
 
 - regex is too weak
-- hybrid is materially better
-- hybrid still leaks too much to be treated as a finished privacy solution
+- hybrid is materially better on the validated validation fixture
+- hybrid still is not a finished privacy solution
 
 ## Running the benchmark yourself
 
