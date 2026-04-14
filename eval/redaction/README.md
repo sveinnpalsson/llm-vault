@@ -16,7 +16,7 @@ At the moment, the validated checked-in model-backed results use **`gemma4-26b`*
 The current validated comparison uses a locally prepared fixture derived from the public AI4Privacy dataset:
 
 - dataset: [`ai4privacy/pii-masking-300k`](https://huggingface.co/datasets/ai4privacy/pii-masking-300k)
-- split used here: validation
+- splits used here: train and validation
 - modes compared: `regex` and `hybrid`
 
 We report the benchmark in two ways.
@@ -51,12 +51,14 @@ Reported counts:
 
 ## Current Results
 
-The current checked-in validated result compares `regex` against `hybrid` on the validation fixture in `tmp/redaction-eval/reports/ai4privacy-validation-map-downstream-pass-regex-vs-hybrid.json`.
+The current checked-in results compare `regex` against `hybrid` on train and validation fixtures derived from the AI4Privacy benchmark.
 
 ### Label-aware results
 
 | Split | Mode | Precision | Recall | F1 | F2 |
 | --- | --- | ---: | ---: | ---: | ---: |
+| Train | Regex | 0.7039 | 0.1564 | 0.2559 | 0.1852 |
+| Train | Hybrid | 0.8510 | 0.6701 | 0.7498 | 0.6999 |
 | Validation | Regex | 0.7150 | 0.1619 | 0.2640 | 0.1915 |
 | Validation | Hybrid | 0.8332 | 0.7253 | 0.7755 | 0.7446 |
 
@@ -64,6 +66,8 @@ The current checked-in validated result compares `regex` against `hybrid` on the
 
 | Split | Mode | Hidden any label | Still visible | Hidden under wrong label | Over-redacted | Hide rate |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Train | Regex | 3553 | 12595 | 1374 | 170 | 0.2200 |
+| Train | Hybrid | 12722 | 3426 | 1450 | 738 | 0.7878 |
 | Validation | Regex | 929 | 3272 | 314 | 50 | 0.2211 |
 | Validation | Hybrid | 3546 | 655 | 483 | 227 | 0.8441 |
 
@@ -76,6 +80,13 @@ The short version is:
 - Hybrid hides much more sensitive content than regex.
 - Even so, the current system is **not close to privacy-complete** on this benchmark.
 
+Train:
+
+- F1 improves from **0.2559** to **0.7498**
+- Recall improves from **0.1564** to **0.6701**
+- Hide rate improves from **0.2200** to **0.7878**
+- Visible leaks drop from **12595** to **3426**
+
 Validation:
 
 - F1 improves from **0.2640** to **0.7755**
@@ -83,11 +94,11 @@ Validation:
 - Hide rate improves from **0.2211** to **0.8441**
 - Visible leaks drop from **3272** to **655**
 
-That is a much stronger result than the earlier reported numbers, but it still leaves visible leakage and materially higher over-redaction than the regex baseline.
+Across both splits, that is a much stronger result than the regex baseline, but it still leaves visible leakage and materially higher over-redaction in hybrid mode.
 
 ## Where the system still struggles
 
-The main weak spots in the validated validation run are:
+The main weak spots in the current benchmark runs are:
 
 - **Custom handles and usernames** still leak in a noticeable share of cases.
 - **Account and ID-like fields** remain sensitive to labeling and field-context errors.
@@ -96,7 +107,7 @@ The main weak spots in the validated validation run are:
 So the current story is not “problem solved.” It is:
 
 - regex is too weak
-- hybrid is materially better on the validated validation fixture
+- hybrid is materially better on both train and validation fixtures
 - hybrid still is not a finished privacy solution
 
 ## Running the benchmark yourself
