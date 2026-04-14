@@ -91,7 +91,7 @@ photos_roots = []
 
 [summary]
 base_url = "http://127.0.0.1:8080/v1"
-model = "qwen3-14b"
+model = "gemma4-26b"
 
 [embedding]
 base_url = "http://127.0.0.1:8080/v1"
@@ -99,7 +99,7 @@ model = "Qwen3-Embedding-8B"
 
 [redaction]
 base_url = "http://127.0.0.1:8080/v1"
-model = "qwen3-14b"
+model = "gemma4-26b"
 
 [photo_analysis]
 url = "http://127.0.0.1:8081/analyze"
