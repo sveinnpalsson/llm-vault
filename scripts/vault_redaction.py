@@ -997,25 +997,32 @@ def _model_detect_candidates(
             {
                 "role": "system",
                 "content": (
-                    "Identify PII in text and return JSON only. "
-                    "Schema: {\"redactions\":[{\"key_name\":\"EMAIL|PHONE|URL|ACCOUNT|PERSON|ADDRESS|CUSTOM\","
-                    "\"values\":[\"...\"]}]}. "
-                    "CUSTOM means usernames, handles, nicknames, forum IDs, and custom user IDs. "
-                    "Examples of CUSTOM values: @amy_doe, amy.doe-77, user-43CU, clan.member9, neo-43CU, or QXUser. "
-                    "PERSON means a real human name such as Amy Doe or Jane Smith. "
-                    "Do not use PERSON for usernames, handles, nicknames, forum IDs, or custom user IDs. "
-                    "Do not label generic role or field words as PII: speaker, contact, employee, participant, "
-                    "username, handle, or employee id are labels, not values. "
-                    "If a value matches EMAIL, PHONE, URL, or ACCOUNT, use that canonical label instead of CUSTOM."
+                    "You are a privacy redaction extractor. "
+                    "Your job is to find and return ALL literal sensitive values in the provided text that should be redacted. "
+                    "Return JSON only, with exactly this shape: "
+                    "{\"redactions\":[{\"key_name\":\"EMAIL|PHONE|URL|ACCOUNT|PERSON|ADDRESS|CUSTOM\",\"values\":[\"...\"]}]}. "
+                    "Redact all personally identifying or account-like sensitive values present in the text. "
+                    "If a value is clearly sensitive but you are unsure which category fits best, include it as CUSTOM. "
+                    "Never omit a sensitive value just because the category is ambiguous. "
+                    "Prefer recalling sensitive values over being conservative. If it looks like real PII or a unique identifier in context, include it. "
+                    "Field context matters more than surface form. In structured records, forms, CSV, JSON, XML, lists, and tables, use the field meaning and nearby labels to classify values. "
+                    "Government identifiers, passport numbers, social security numbers, student IDs, account numbers, card numbers, application IDs, ID numbers, and similar unique identifiers should usually be ACCOUNT unless another category is clearly better. "
+                    "Usernames, handles, opaque IDs, custom alphanumeric identifiers, and unknown unique tokens should be CUSTOM when they are sensitive and do not clearly belong to another category. "
+                    "Names should be PERSON even when they are surnames only, comma-separated names, or values in tabular or name-related fields. "
+                    "Addresses may appear as full addresses or split across fields like building, street, city, state, postcode, or country. Extract literal source-faithful address values that appear in the text. Do not invent or normalize values that are not literally present. "
+                    "For structured records, prefer the literal field values as they appear in the source text rather than combining multiple fields into a new synthesized string, unless the combined string itself appears literally in the text. "
+                    "Do not return field labels, explanations, category names, or generic words unless they are themselves the sensitive value. "
+                    "Do not explain your reasoning. Output JSON only. "
+                    "Category guidance: EMAIL means email addresses. PHONE means telephone or contact numbers. URL means web links. ACCOUNT means account-like identifiers, official numeric or alphanumeric identifiers, passport numbers, SSNs, card numbers, student IDs, application IDs, and ID numbers. PERSON means names of people, including surnames and comma-separated personal names. ADDRESS means address values, including building number, street, city, state, postcode, country, or full address text. CUSTOM means any other sensitive unique identifier or user-specific token that does not fit above. "
+                    "Important: if a value is sensitive and you are deciding between omitting it or labeling it CUSTOM, label it CUSTOM. "
+                    "If a field label suggests a value is sensitive, respect the field context even if the value shape is unusual. "
+                    "If a Name field contains a phone-like or ID-like value, still treat it as sensitive and include it. "
+                    "If a passport number or government ID appears, do not skip it. Use ACCOUNT if unsure."
                 ),
             },
             {
                 "role": "user",
-                "content": (
-                    f"Profile: {cfg.profile}\n"
-                    f"Instruction: {cfg.instruction or 'standard privacy redaction'}\n"
-                    f"Text:\n{text}"
-                ),
+                "content": text,
             },
         ],
         "temperature": 0.0,
