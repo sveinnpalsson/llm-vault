@@ -150,13 +150,13 @@ _ADDRESS_FIELD_CONTEXT_PATTERN = re.compile(
     r"(?i)(?:country|building(?:\s+number)?|street|city|state|postcode|postal\s*code|zip|address)"
 )
 _ACCOUNT_FIELD_CONTEXT_PATTERN = re.compile(
-    r"(?i)(?:account|acct|iban|routing|card|ssn|social\s+security|passport|passport\s+number|id\s+number|id\s+card|student\s+id|application\s+id|identifier|tax\s*id|tin)"
+    r"(?i)(?:account|acct|iban|routing|card|ssn|social\s+security(?:\s+number)?|passport|passport\s+number|id\s+number|id\s+card|student\s+id|application\s+id|identifier|tax\s*id|tin)"
 )
 _ANY_FIELD_CONTEXT_PATTERN = re.compile(
     r"(?i)(?:first\s*name|last\s*name|full\s*name|given\s*name|middle\s*name|family\s*name|surname|lastname|firstname|fullname|givenname|middlename|familyname|"
     r"country|building(?:\s+number)?|street|city|state|postcode|postal\s*code|zip|address|"
     r"email|e-mail|phone|telephone|contact\s+number|mobile|fax|url|website|"
-    r"account|acct|iban|routing|card|ssn|social\s+security|passport|passport\s+number|id\s+number|id\s+card|student\s+id|application\s+id|identifier|tax\s*id|tin)"
+    r"account|acct|iban|routing|card|ssn|social\s+security(?:\s+number)?|passport|passport\s+number|id\s+number|id\s+card|student\s+id|application\s+id|identifier|tax\s*id|tin)"
 )
 _ACCOUNT_PREFIX_PATTERN = re.compile(
     r"(?i)^(?:acct|account|iban|routing|card|ssn|passport|idcard|social|taxid|tax-id|tin)[\s:_#-]*[A-Z0-9]"
@@ -656,8 +656,13 @@ def _has_field_local_context(prefix: str, target_pattern: re.Pattern[str]) -> bo
     if target_label.start() != last_label.start():
         return False
     trailing = prefix[target_label.end() :]
+    trailing = re.sub(
+        r"""\b[A-Za-z_][A-Za-z0-9_:-]*\s*=\s*(?:"[^"]*"|'[^']*'|\\\"(?:[^\\]|\\.)*?\\\")""",
+        "",
+        trailing,
+    )
     trailing = re.sub(r"\b[A-Za-z_][A-Za-z0-9_:-]*\s*=", "", trailing)
-    return bool(re.fullmatch(r'[\s:=#\-"\'\[\]\(\)<>/]*', trailing))
+    return bool(re.fullmatch(r'[\s:=#\-"\'\[\]\(\)<>/\\]*', trailing))
 
 
 def _looks_like_generic_role_identifier(display: str) -> bool:
@@ -1352,13 +1357,11 @@ def redact_chunks_with_persistent_map(
             candidate_sources[str(cand.source or "unknown")] += 1
         for cand in candidates:
             source_name = str(cand.source or "")
-            key_name = cand.key_name
-            if source_name.startswith("llm"):
-                key_name = _remap_model_candidate_key_name(
-                    cand.key_name,
-                    cand.value,
-                    source_text=text,
-                )
+            key_name = _remap_model_candidate_key_name(
+                cand.key_name,
+                cand.value,
+                source_text=text,
+            )
             candidate_values = [cand.value]
             if (
                 source_name.startswith("llm")
@@ -1369,10 +1372,11 @@ def redact_chunks_with_persistent_map(
                 if expanded:
                     candidate_values = expanded
             for candidate_value in candidate_values:
+                source_context = text if source_name.startswith("llm") or key_name != cand.key_name else None
                 placeholder, value_norm, is_new = table.register(
                     key_name,
                     candidate_value,
-                    source_text=text if source_name.startswith("llm") else None,
+                    source_text=source_context,
                 )
                 if placeholder and is_new:
                     entry = {
