@@ -34,7 +34,6 @@ from vault_redaction import (
     PersistentRedactionMap,
     RedactionConfig,
     is_persistent_redaction_value_allowed,
-    is_redaction_value_allowed,
     redact_chunks_with_persistent_map,
     render_redacted_text,
 )
