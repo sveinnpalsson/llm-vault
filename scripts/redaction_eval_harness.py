@@ -106,6 +106,7 @@ class RedactionEvalCaseResult:
     binary_over_redaction_count: int = 0
     binary_hide_rate: float = 0.0
     binary_metrics_version: int = 0
+    binary_metrics_error: str = ""
 
 
 @dataclass(slots=True)
@@ -180,6 +181,7 @@ class RedactionEvalComparisonDelta:
     recall_delta: float
     f1_delta: float
     f2_delta: float
+    over_redaction_rate_delta: float
     binary_hide_rate_delta: float
     mismatch_delta: int
     llm_candidates_delta: int
@@ -683,6 +685,36 @@ def _compute_binary_case_metrics(
     }
 
 
+def _compute_binary_case_metrics_safe(
+    case: RedactionEvalCase,
+    *,
+    actual_redacted_text: str,
+    actual_spans: list[RedactionSpan] | None = None,
+) -> tuple[dict[str, int | float], str]:
+    try:
+        return (
+            _compute_binary_case_metrics(
+                case,
+                actual_redacted_text=actual_redacted_text,
+                actual_spans=actual_spans,
+            ),
+            "",
+        )
+    except ValueError as exc:
+        fallback_expected_count = len(case.expected_spans) or len(case.expected_placeholders)
+        return (
+            {
+                "hidden_any_label": 0,
+                "leaked_visible": fallback_expected_count,
+                "mislabeled_but_hidden": 0,
+                "binary_over_redaction_count": 0,
+                "binary_hide_rate": 0.0,
+                "binary_metrics_version": BINARY_METRICS_VERSION,
+            },
+            str(exc),
+        )
+
+
 def _score_from_counts(tp: int, fp: int, fn: int, cases_total: int) -> RedactionEvalSummary:
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
@@ -739,13 +771,14 @@ def _backfill_case_result_binary_metrics(
         case = case_by_id.get(result.case_id)
         if case is None:
             raise ValueError(f"missing benchmark case for checkpoint result: {result.case_id}")
-        metrics = _compute_binary_case_metrics(
+        metrics, error = _compute_binary_case_metrics_safe(
             case,
             actual_redacted_text=result.actual_redacted_text,
             actual_spans=result.actual_spans or None,
         )
         for key, value in metrics.items():
             setattr(result, key, value)
+        result.binary_metrics_error = error
 
 
 def build_report_from_case_results(
@@ -778,12 +811,18 @@ def build_report_from_case_results(
         llm_candidates_total += result.llm_candidates_detected
         if result.llm_candidates_detected > 0:
             llm_candidate_cases += 1
-        hidden_any_label += result.hidden_any_label
-        leaked_visible += result.leaked_visible
-        mislabeled_but_hidden += result.mislabeled_but_hidden
-        binary_over_redaction_count += result.binary_over_redaction_count
-        expected_sensitive_total += len(result.expected_placeholders)
-        if result.text_mismatch or result.missing_placeholders or result.unexpected_placeholders:
+        if not result.binary_metrics_error:
+            hidden_any_label += result.hidden_any_label
+            leaked_visible += result.leaked_visible
+            mislabeled_but_hidden += result.mislabeled_but_hidden
+            binary_over_redaction_count += result.binary_over_redaction_count
+            expected_sensitive_total += len(result.expected_placeholders)
+        if (
+            result.text_mismatch
+            or result.missing_placeholders
+            or result.unexpected_placeholders
+            or result.binary_metrics_error
+        ):
             mismatches += 1
 
     summary = _score_from_counts(tp=tp, fp=fp, fn=fn, cases_total=len(results))
@@ -906,7 +945,7 @@ def run_eval_cases(
         unexpected = _counter_diff(actual_counter, expected_counter)
         text_mismatch = actual_redacted_text != case.expected_redacted_text
         actual_spans = _actual_spans_from_applied(run.applied_spans_by_chunk[0])
-        binary_metrics = _compute_binary_case_metrics(
+        binary_metrics, binary_metrics_error = _compute_binary_case_metrics_safe(
             case,
             actual_redacted_text=actual_redacted_text,
             actual_spans=actual_spans,
@@ -930,6 +969,7 @@ def run_eval_cases(
             binary_over_redaction_count=int(binary_metrics["binary_over_redaction_count"]),
             binary_hide_rate=float(binary_metrics["binary_hide_rate"]),
             binary_metrics_version=int(binary_metrics["binary_metrics_version"]),
+            binary_metrics_error=binary_metrics_error,
         )
         results.append(case_result)
         completed_case_ids.add(case.case_id)
@@ -1102,6 +1142,8 @@ def _build_payload(
                     recall_delta=report.summary.recall - baseline.summary.recall,
                     f1_delta=report.summary.f1 - baseline.summary.f1,
                     f2_delta=report.summary.f2 - baseline.summary.f2,
+                    over_redaction_rate_delta=report.summary.over_redaction_rate
+                    - baseline.summary.over_redaction_rate,
                     binary_hide_rate_delta=report.summary.binary_hide_rate
                     - baseline.summary.binary_hide_rate,
                     mismatch_delta=report.summary.cases_with_mismatch - baseline.summary.cases_with_mismatch,

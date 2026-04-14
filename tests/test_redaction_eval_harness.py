@@ -269,6 +269,58 @@ def test_compute_binary_case_metrics_uses_exact_spans_when_redacted_text_alignme
     assert metrics["binary_hide_rate"] == 1.0
 
 
+def test_run_eval_cases_records_binary_metrics_error_without_aborting(monkeypatch) -> None:
+    case = RedactionEvalCase(
+        case_id="ambiguous-no-spans",
+        source_type="docs",
+        text="Lead foo X bar X baz",
+        expected_redacted_text="Lead <REDACTED_PERSON_A> X <REDACTED_PERSON_B>",
+        expected_placeholders=["PERSON", "PERSON"],
+    )
+
+    class StubRun:
+        chunk_text_redacted = ["Lead <REDACTED_PERSON_A> X <REDACTED_PERSON_B>"]
+        applied_spans_by_chunk = [
+            [
+                AppliedRedactionSpan(
+                    start=5,
+                    end=8,
+                    key_name="PERSON",
+                    placeholder="<REDACTED_PERSON_A>",
+                ),
+                AppliedRedactionSpan(
+                    start=11,
+                    end=14,
+                    key_name="PERSON",
+                    placeholder="<REDACTED_PERSON_B>",
+                ),
+            ]
+        ]
+        candidate_sources = {"regex": 2}
+
+    monkeypatch.setattr(
+        sys.modules["redaction_eval_harness"],
+        "redact_chunks_with_persistent_map",
+        lambda *args, **kwargs: StubRun(),
+    )
+
+    report = run_eval_cases(
+        [case],
+        cfg=RedactionConfig(mode="regex", enabled=True),
+        fixture_path=FIXTURES / "redaction_eval_phase_a.jsonl",
+    )
+
+    assert report.summary.cases_total == 1
+    assert report.summary.cases_with_mismatch == 1
+    assert report.summary.hidden_any_label == 0
+    assert report.summary.leaked_visible == 0
+    assert report.summary.binary_over_redaction_count == 0
+    assert report.summary.binary_hide_rate == 0.0
+    assert report.cases[0].binary_metrics_error == (
+        "redacted text does not have a unique span alignment against source text"
+    )
+
+
 def test_resolve_redaction_config_reads_explicit_toml_and_overrides(tmp_path: Path) -> None:
     config_path = tmp_path / "vault-ops.toml"
     config_path.write_text(
@@ -330,6 +382,7 @@ def test_main_compare_mode_writes_comparison_payload(tmp_path: Path, monkeypatch
     assert payload["comparison"]["baseline_mode"] == "regex"
     assert [run["mode"] for run in payload["runs"]] == ["regex", "hybrid"]
     assert payload["comparison"]["deltas"][0]["mode"] == "hybrid"
+    assert "over_redaction_rate_delta" in payload["comparison"]["deltas"][0]
     assert "binary_hide_rate_delta" in payload["comparison"]["deltas"][0]
 
 

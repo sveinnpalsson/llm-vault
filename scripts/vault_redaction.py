@@ -110,6 +110,45 @@ _GENERIC_PERSON_TOKENS = {
     "individual",
     "individuals",
 }
+_GENERIC_CUSTOM_TOKENS = {
+    "username",
+    "user",
+    "userid",
+    "user_id",
+    "user-id",
+    "handle",
+    "nickname",
+    "forumid",
+    "forum_id",
+    "forum-id",
+    "customid",
+    "custom_id",
+    "custom-id",
+    "employee",
+    "employeeid",
+    "employee_id",
+    "employee-id",
+    "speaker",
+    "contact",
+    "participant",
+}
+_WRAPPING_DELIMITER_PAIRS = {
+    '"': '"',
+    "'": "'",
+    "`": "`",
+    "[": "]",
+    "{": "}",
+    "(": ")",
+}
+_PERSON_FIELD_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:first\s*name|last\s*name|full\s*name|given\s*name|middle\s*name|family\s*name|surname|lastname|firstname|fullname|givenname|middlename|familyname)"
+)
+_ADDRESS_FIELD_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:country|building(?:\s+number)?|street|city|state|postcode|postal\s*code|zip|address)"
+)
+_ACCOUNT_PREFIX_PATTERN = re.compile(
+    r"(?i)^(?:acct|account|iban|routing|card|ssn|passport|idcard|social|taxid|tax-id|tin)[\s:_#-]*[A-Z0-9]"
+)
 _ADDRESS_HINTS = {
     "street",
     "st",
@@ -269,9 +308,15 @@ class PersistentRedactionMap:
                 obj.key_counts[key] = max(obj.key_counts.get(key, 0), idx)
         return obj
 
-    def register(self, key_name: str, value: str) -> tuple[str, str, bool]:
+    def register(
+        self,
+        key_name: str,
+        value: str,
+        *,
+        source_text: str | None = None,
+    ) -> tuple[str, str, bool]:
         key = _normalize_key_name(key_name)
-        if not is_redaction_value_allowed(key, value):
+        if not is_redaction_value_allowed(key, value, source_text=source_text):
             return "", "", False
         normalized = _normalize_value(key, value)
         if not normalized:
@@ -446,7 +491,14 @@ def _normalize_value(key_name: str, value: str) -> str:
 
 def _normalize_candidate_display(value: str) -> str:
     cleaned = re.sub(r"\s+", " ", (value or "").strip())
-    cleaned = cleaned.strip("`\"'[]{}()")
+    while len(cleaned) >= 2:
+        closer = _WRAPPING_DELIMITER_PAIRS.get(cleaned[0])
+        if closer is None or cleaned[-1] != closer:
+            break
+        inner = cleaned[1:-1].strip()
+        if not inner:
+            break
+        cleaned = inner
     return cleaned.strip()
 
 
@@ -480,6 +532,172 @@ def _candidate_present_in_text(key_name: str, value: str, text: str) -> bool:
     return display.lower() in source.lower()
 
 
+def _has_strong_person_field_context(display: str, source_text: str | None) -> bool:
+    source = str(source_text or "")
+    if not source or not display:
+        return False
+    for match in re.finditer(re.escape(display), source, flags=re.I):
+        start = max(0, match.start() - 48)
+        end = min(len(source), match.end() + 16)
+        window = source[start:end]
+        if _PERSON_FIELD_CONTEXT_PATTERN.search(window):
+            return True
+    return False
+
+
+def _has_strong_address_field_context(display: str, source_text: str | None) -> bool:
+    source = str(source_text or "")
+    if not source or not display:
+        return False
+    for match in re.finditer(re.escape(display), source, flags=re.I):
+        start = max(0, match.start() - 64)
+        end = min(len(source), match.end() + 24)
+        window = source[start:end]
+        if _ADDRESS_FIELD_CONTEXT_PATTERN.search(window):
+            return True
+    return False
+
+
+def _expand_address_literals(display: str, source_text: str | None) -> list[str]:
+    source = str(source_text or "")
+    if not source or not display:
+        return []
+    if _candidate_present_in_text("ADDRESS", display, source):
+        return [display]
+
+    candidates: list[str] = []
+    for raw_part in re.split(r"\s*,\s*", display):
+        part = raw_part.strip()
+        if not part:
+            continue
+        candidates.append(part)
+        if not _candidate_present_in_text("ADDRESS", part, source):
+            m_num = re.match(r"^(\d+[A-Za-z0-9-]*)\s+(.+)$", part)
+            if m_num:
+                candidates.extend([m_num.group(1), m_num.group(2).strip()])
+            m_code = re.match(r"^([A-Za-z]{2,3})\s+(\d[\w -]*)$", part)
+            if m_code:
+                candidates.extend([m_code.group(1), m_code.group(2).strip()])
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in candidates:
+        cleaned = _normalize_candidate_display(part)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        if not _candidate_present_in_text("ADDRESS", cleaned, source):
+            continue
+        seen.add(key)
+        out.append(cleaned)
+    return out
+
+
+def _is_obvious_account_value(display: str) -> bool:
+    if not is_redaction_value_allowed("ACCOUNT", display):
+        return False
+
+    compact = re.sub(r"\s+", "", display)
+    digits = re.sub(r"\D", "", compact)
+    if len(digits) < 6:
+        return False
+
+    if not any(ch.isalpha() for ch in compact):
+        return True
+
+    if _ACCOUNT_PREFIX_PATTERN.match(compact):
+        return True
+
+    if any(ch in "._@" for ch in compact):
+        return False
+
+    if any(ch.islower() for ch in compact):
+        return False
+
+    return len(compact) >= 8 and sum(ch.isdigit() for ch in compact) >= 4
+
+
+def _is_allowed_custom_value(display: str) -> bool:
+    compact = display.strip()
+    if " " in compact:
+        return False
+
+    lowered = compact.lower()
+    if lowered in _GENERIC_LABELS or lowered in _GENERIC_CUSTOM_TOKENS:
+        return False
+
+    has_alpha = any(ch.isalpha() for ch in compact)
+    has_digit = any(ch.isdigit() for ch in compact)
+    has_identifier_punct = any(ch in "@._-" for ch in compact)
+    if not has_alpha:
+        return False
+
+    if compact.startswith("@"):
+        body = compact[1:]
+        if len(body) < 3:
+            return False
+        return bool(re.fullmatch(r"[A-Za-z0-9._-]+", body)) and any(ch.isalpha() for ch in body)
+
+    if len(compact) < 4:
+        return False
+
+    if has_digit:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", compact):
+            return False
+        alpha_count = sum(ch.isalpha() for ch in compact)
+        digit_count = sum(ch.isdigit() for ch in compact)
+        if alpha_count < 1 or digit_count < 1:
+            return False
+        return (
+            len(compact) >= 5
+            or compact[0].isdigit()
+            or any(ch.isupper() for ch in compact)
+            or has_identifier_punct
+        )
+
+    if has_identifier_punct:
+        token_parts = [part for part in re.split(r"[@._-]+", compact) if part]
+        if len(token_parts) < 2:
+            return False
+        if not all(re.fullmatch(r"[A-Za-z0-9]+", part) for part in token_parts):
+            return False
+        if not any(any(ch.isalpha() for ch in part) for part in token_parts):
+            return False
+        punct_chars = {ch for ch in compact if ch in "@._-"}
+        if punct_chars == {"-"} and all(re.fullmatch(r"[A-Z][a-z]+", part) for part in token_parts):
+            return False
+        return sum(len(part) for part in token_parts) >= 4
+
+    if re.fullmatch(r"[A-Za-z]+", compact):
+        return bool(
+            re.search(r"[a-z][A-Z]", compact)
+            or re.search(r"[A-Z]{2,}", compact)
+        )
+
+    return False
+
+
+def _remap_model_candidate_key_name(key_name: str, value: str) -> str:
+    key = _normalize_key_name(key_name)
+    display = _normalize_candidate_display(value)
+    if not display:
+        return key
+
+    if key == "PERSON" and _is_allowed_custom_value(display):
+        return "CUSTOM"
+
+    if key == "CUSTOM":
+        for canonical_key in ("EMAIL", "PHONE", "URL"):
+            if is_redaction_value_allowed(canonical_key, display):
+                return canonical_key
+        if _is_obvious_account_value(display):
+            return "ACCOUNT"
+
+    return key
+
+
 def is_redaction_value_allowed(
     key_name: str,
     value: str,
@@ -494,7 +712,8 @@ def is_redaction_value_allowed(
     if not display or _looks_like_generic_label(display):
         return False
     if len(display) < 3:
-        return False
+        if key != "ADDRESS" or not _has_strong_address_field_context(display, source_text):
+            return False
     if re.fullmatch(r"[Xx*#._-]+", display):
         return False
     if source_text is not None and not _candidate_present_in_text(key, display, source_text):
@@ -532,7 +751,7 @@ def is_redaction_value_allowed(
         if ":" in display or "@" in display or "/" in display:
             return False
         tokens = re.findall(r"[A-Za-z][A-Za-z'’-]*", display)
-        if len(tokens) < 2:
+        if len(tokens) < 2 and not _has_strong_person_field_context(display, source_text):
             return False
         if any(token.lower() in _GENERIC_PERSON_TOKENS for token in tokens):
             return False
@@ -542,11 +761,14 @@ def is_redaction_value_allowed(
 
     if key == "ADDRESS":
         lowered = display.lower().strip(" .,:;")
-        if lowered in _GENERIC_LABELS or lowered in _STATE_OR_REGION_CODES:
+        if lowered in _GENERIC_LABELS:
             return False
-        if len(display) < 8:
-            return False
+        contextual = _has_strong_address_field_context(display, source_text)
+        if lowered in _STATE_OR_REGION_CODES:
+            return contextual
         if re.fullmatch(r"[A-Za-z]{2,3}", display):
+            return contextual
+        if len(display) < 8 and not contextual:
             return False
         has_digit = any(ch.isdigit() for ch in display)
         word_tokens = {
@@ -559,10 +781,10 @@ def is_redaction_value_allowed(
             return True
         if word_tokens & _ADDRESS_HINTS:
             return True
-        return False
+        return contextual and any(ch.isalpha() for ch in display)
 
     if key == "CUSTOM":
-        return False
+        return _is_allowed_custom_value(display)
 
     return False
 
@@ -770,7 +992,14 @@ def _model_detect_candidates(
                 "content": (
                     "Identify PII in text and return JSON only. "
                     "Schema: {\"redactions\":[{\"key_name\":\"EMAIL|PHONE|URL|ACCOUNT|PERSON|ADDRESS|CUSTOM\","
-                    "\"values\":[\"...\"]}]}"
+                    "\"values\":[\"...\"]}]}. "
+                    "CUSTOM means usernames, handles, nicknames, forum IDs, and custom user IDs. "
+                    "Examples of CUSTOM values: @amy_doe, amy.doe-77, user-43CU, clan.member9, neo-43CU, or QXUser. "
+                    "PERSON means a real human name such as Amy Doe or Jane Smith. "
+                    "Do not use PERSON for usernames, handles, nicknames, forum IDs, or custom user IDs. "
+                    "Do not label generic role or field words as PII: speaker, contact, employee, participant, "
+                    "username, handle, or employee id are labels, not values. "
+                    "If a value matches EMAIL, PHONE, URL, or ACCOUNT, use that canonical label instead of CUSTOM."
                 ),
             },
             {
@@ -873,14 +1102,22 @@ def _model_detect_candidates(
             continue
         for val in values:
             sval = str(val or "").strip()
-            if sval and is_redaction_value_allowed(key_name, sval, source_text=text):
-                out.append(
-                    RedactionCandidate(
-                        key_name=key_name,
-                        value=sval,
-                        source=source,
+            display = _normalize_candidate_display(sval)
+            mapped_key_name = _remap_model_candidate_key_name(key_name, display)
+            candidate_values = [display]
+            if mapped_key_name == "ADDRESS" and display and not _candidate_present_in_text("ADDRESS", display, text):
+                expanded = _expand_address_literals(display, text)
+                if expanded:
+                    candidate_values = expanded
+            for candidate_value in candidate_values:
+                if candidate_value and is_redaction_value_allowed(mapped_key_name, candidate_value, source_text=text):
+                    out.append(
+                        RedactionCandidate(
+                            key_name=mapped_key_name,
+                            value=candidate_value,
+                            source=source,
+                        )
                     )
-                )
     return out
 
 
@@ -903,17 +1140,35 @@ def redact_chunks_with_persistent_map(
         for cand in candidates:
             candidate_sources[str(cand.source or "unknown")] += 1
         for cand in candidates:
-            placeholder, value_norm, is_new = table.register(cand.key_name, cand.value)
-            if placeholder and is_new:
-                inserted_entries.append(
-                    {
-                        "key_name": _normalize_key_name(cand.key_name),
-                        "placeholder": placeholder,
-                        "value_norm": value_norm,
-                        "original_value": cand.value,
-                        "source_mode": cand.source,
-                    }
+            source_name = str(cand.source or "")
+            key_name = cand.key_name
+            if source_name.startswith("llm"):
+                key_name = _remap_model_candidate_key_name(cand.key_name, cand.value)
+            candidate_values = [cand.value]
+            if (
+                source_name.startswith("llm")
+                and key_name == "ADDRESS"
+                and not _candidate_present_in_text("ADDRESS", cand.value, text)
+            ):
+                expanded = _expand_address_literals(cand.value, text)
+                if expanded:
+                    candidate_values = expanded
+            for candidate_value in candidate_values:
+                placeholder, value_norm, is_new = table.register(
+                    key_name,
+                    candidate_value,
+                    source_text=text if source_name.startswith("llm") else None,
                 )
+                if placeholder and is_new:
+                    inserted_entries.append(
+                        {
+                            "key_name": _normalize_key_name(key_name),
+                            "placeholder": placeholder,
+                            "value_norm": value_norm,
+                            "original_value": candidate_value,
+                            "source_mode": cand.source,
+                        }
+                    )
 
     for text in chunks:
         _register(_regex_detect_candidates(text))
