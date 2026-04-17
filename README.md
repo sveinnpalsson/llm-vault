@@ -1,5 +1,9 @@
 # llm-vault
 
+[![CI](https://github.com/sveinnpalsson/llm-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/sveinnpalsson/llm-vault/actions)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Privacy-first local vault for personal documents, photos, and mail.
 
 `llm-vault` builds an encrypted local registry and vector index over local content, then exposes:
@@ -72,7 +76,7 @@ Optional:
 
 - a local photo-analysis service
 - a local PDF parsing service for documents
-- `inbox-vault` bridge for gmail
+- [`inbox-vault`](https://github.com/sveinnpalsson/inbox-vault) bridge for gmail
 
 ## Example `vault-ops.toml`
 
@@ -87,7 +91,7 @@ photos_roots = []
 
 [summary]
 base_url = "http://127.0.0.1:8080/v1"
-model = "qwen3-14b"
+model = "gemma4-26b"
 
 [embedding]
 base_url = "http://127.0.0.1:8080/v1"
@@ -95,7 +99,7 @@ model = "Qwen3-Embedding-8B"
 
 [redaction]
 base_url = "http://127.0.0.1:8080/v1"
-model = "qwen3-14b"
+model = "gemma4-26b"
 
 [photo_analysis]
 url = "http://127.0.0.1:8081/analyze"
@@ -157,9 +161,9 @@ scripts/cron_helper.sh --install
 
 If you use `inbox-vault` as a mail source, keep it as the first job and run `llm-vault` a few minutes later. The operator setup and bridged two-job flow are documented in [docs/infrastructure-stack.md](docs/infrastructure-stack.md).
 
-### Enabling mail via `inbox-vault`
+### Enabling mail via [`inbox-vault`](https://github.com/sveinnpalsson/inbox-vault)
 
-`llm-vault` does not sync Gmail directly. Mail is made available through the optional `[mail_bridge]` section, which reads from a local `inbox-vault` database.
+`llm-vault` does not sync Gmail directly. Mail is made available through the optional `[mail_bridge]` section, which reads from a local [`inbox-vault`](https://github.com/sveinnpalsson/inbox-vault) database.
 
 To enable mail:
 
