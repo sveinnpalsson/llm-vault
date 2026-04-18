@@ -11,9 +11,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -57,6 +59,7 @@ DEFAULT_PDF_PARSE_PROFILE = "auto"
 ROOT = Path(__file__).resolve().parents[1]
 PROGRESS_HEARTBEAT_SECONDS = 5.0
 MAIL_BRIDGE_SOURCE = "inbox-vault"
+MAIL_ATTACHMENT_SOURCE = "inbox-vault/mail-attachment"
 DEFAULT_MAIL_BRIDGE_PASSWORD_ENV = "INBOX_VAULT_DB_PASSWORD"
 DEFAULT_VAULT_ROOT_ENV = "LLM_VAULT_CONTENT_ROOT"
 
@@ -207,6 +210,7 @@ class MailBridgeConfig:
     password_env: str = DEFAULT_MAIL_BRIDGE_PASSWORD_ENV
     include_accounts: tuple[str, ...] = ()
     import_summary: bool = True
+    import_attachments: bool = True
 
 
 @dataclass
@@ -274,6 +278,29 @@ class MailMessageRecord:
     labels_json: str
     summary_text: str
     material_updated_at: str
+
+
+@dataclass(frozen=True)
+class MailAttachmentRecord:
+    attachment_ref: str
+    attachment_key: str
+    msg_id: str
+    account_email: str
+    part_id: str
+    gmail_attachment_id: str
+    mime_type: str
+    filename: str
+    size_bytes: int
+    content_disposition: str
+    content_id: str
+    is_inline: bool
+    inventory_state: str
+    inventoried_at: str
+    storage_kind: str
+    storage_path: str
+    content_sha256: str
+    content_size_bytes: int
+    materialized_at: str
 
 
 def _vault_content_root() -> Path | None:
@@ -380,6 +407,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mail-bridge-password-env", default=None, help=argparse.SUPPRESS)
     p.add_argument("--mail-bridge-include-account", action="append", default=None, help=argparse.SUPPRESS)
     p.add_argument("--mail-bridge-no-import-summary", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--mail-bridge-no-import-attachments", action="store_true", help=argparse.SUPPRESS)
     return p.parse_args()
 
 
@@ -500,6 +528,7 @@ def _resolve_mail_bridge_config(args: argparse.Namespace) -> MailBridgeConfig:
         password_env=password_env or DEFAULT_MAIL_BRIDGE_PASSWORD_ENV,
         include_accounts=include_accounts,
         import_summary=not bool(args.mail_bridge_no_import_summary),
+        import_attachments=not bool(getattr(args, "mail_bridge_no_import_attachments", False)),
     )
 
 
@@ -905,6 +934,52 @@ def ensure_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mail_attachment_bridge (
+          attachment_ref TEXT PRIMARY KEY,
+          attachment_key TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL,
+          msg_id TEXT NOT NULL,
+          account_email TEXT NOT NULL,
+          part_id TEXT NOT NULL,
+          gmail_attachment_id TEXT NOT NULL DEFAULT '',
+          mime_type TEXT NOT NULL DEFAULT '',
+          filename TEXT NOT NULL DEFAULT '',
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          content_disposition TEXT NOT NULL DEFAULT '',
+          content_id TEXT NOT NULL DEFAULT '',
+          is_inline INTEGER NOT NULL DEFAULT 0,
+          inventory_state TEXT NOT NULL DEFAULT '',
+          inventoried_at TEXT NOT NULL DEFAULT '',
+          storage_kind TEXT NOT NULL DEFAULT '',
+          storage_path TEXT NOT NULL DEFAULT '',
+          content_sha256 TEXT NOT NULL DEFAULT '',
+          content_size_bytes INTEGER NOT NULL DEFAULT 0,
+          materialized_at TEXT NOT NULL DEFAULT '',
+          target_kind TEXT NOT NULL DEFAULT '',
+          registry_table TEXT NOT NULL DEFAULT '',
+          registry_filepath TEXT NOT NULL DEFAULT '',
+          materialized_input_path TEXT NOT NULL DEFAULT '',
+          ingest_status TEXT NOT NULL DEFAULT '',
+          ingest_error TEXT NOT NULL DEFAULT '',
+          indexed_at TEXT,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mail_attachment_sync_state (
+          bridge_key TEXT NOT NULL,
+          account_email TEXT NOT NULL,
+          last_inventoried_at TEXT NOT NULL,
+          last_inventoried_msg_id TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (bridge_key, account_email)
+        )
+        """
+    )
     _migrate_docs_if_needed(conn)
     _migrate_photos_if_needed(conn)
 
@@ -916,6 +991,7 @@ def ensure_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "docs_registry", "summary_error", "TEXT")
     _ensure_column(conn, "docs_registry", "dates_json", "TEXT")
     _ensure_column(conn, "docs_registry", "primary_date", "TEXT")
+    _ensure_column(conn, "docs_registry", "provenance_json", "TEXT")
 
     _ensure_column(conn, "photos_registry", "category_primary", "TEXT")
     _ensure_column(conn, "photos_registry", "category_secondary", "TEXT")
@@ -932,6 +1008,7 @@ def ensure_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "photos_registry", "ocr_updated_at", "TEXT")
     _ensure_column(conn, "photos_registry", "dates_json", "TEXT")
     _ensure_column(conn, "photos_registry", "primary_date", "TEXT")
+    _ensure_column(conn, "photos_registry", "provenance_json", "TEXT")
     _ensure_column(conn, "mail_registry", "source", "TEXT")
     _ensure_column(conn, "mail_registry", "msg_id", "TEXT")
     _ensure_column(conn, "mail_registry", "account_email", "TEXT")
@@ -948,6 +1025,12 @@ def ensure_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "mail_registry", "dates_json", "TEXT")
     _ensure_column(conn, "mail_registry", "indexed_at", "TEXT")
     _ensure_column(conn, "mail_registry", "updated_at", "TEXT")
+    _ensure_column(conn, "mail_attachment_bridge", "attachment_key", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "mail_attachment_bridge", "storage_kind", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "mail_attachment_bridge", "storage_path", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "mail_attachment_bridge", "content_sha256", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "mail_attachment_bridge", "content_size_bytes", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "mail_attachment_bridge", "materialized_at", "TEXT NOT NULL DEFAULT ''")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_checksum ON docs_registry(checksum)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_summary_hash ON docs_registry(summary_hash)")
@@ -959,6 +1042,15 @@ def ensure_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_account ON mail_registry(account_email)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_primary_date ON mail_registry(primary_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_sync_state_account ON mail_sync_state(account_email)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attachment_msg ON mail_attachment_bridge(msg_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attachment_account ON mail_attachment_bridge(account_email)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attachment_registry ON mail_attachment_bridge(registry_table, registry_filepath)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attachment_key ON mail_attachment_bridge(attachment_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mail_attachment_content_sha ON mail_attachment_bridge(content_sha256)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mail_attachment_sync_state_account "
+        "ON mail_attachment_sync_state(account_email)"
+    )
 
     conn.execute(
         """
@@ -1022,10 +1114,26 @@ def _json_compact(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return bool(row)
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    if not _table_exists(conn, table):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(str(row[1] or "") == column for row in rows)
+
+
 def _mail_bridge_key(cfg: MailBridgeConfig) -> str:
     payload = {
         "db_path": str(Path(cfg.db_path).expanduser().resolve()) if cfg.db_path else "",
         "import_summary": bool(cfg.import_summary),
+        "import_attachments": bool(cfg.import_attachments),
     }
     return hashlib.sha256(_json_compact(payload).encode("utf-8")).hexdigest()
 
@@ -1392,8 +1500,14 @@ def sync_mail_bridge(
     full_scan: bool,
     dry_run: bool,
     deadline: float,
+    text_cap: int = 40000,
+    pdf_cfg: PdfParseConfig | None = None,
+    summary_cfg: SummaryConfig | None = None,
+    chat_client: LocalOpenAIChatClient | None = None,
+    photo_client: LocalPhotoAnalyzerClient | None = None,
     budget: WorkBudget | None = None,
     verbose: bool = False,
+    counters: dict[str, int] | None = None,
 ) -> tuple[int, int, int]:
     if not mail_cfg.enabled:
         return 0, 0, 0
@@ -1543,11 +1657,809 @@ def sync_mail_bridge(
     finally:
         inbox_conn.close()
 
+    if not dry_run and pdf_cfg is not None and summary_cfg is not None:
+        a_updated, a_pruned, _ = sync_mail_attachments_bridge(
+            conn,
+            mail_cfg=mail_cfg,
+            full_scan=full_scan,
+            dry_run=dry_run,
+            deadline=deadline,
+            text_cap=text_cap,
+            pdf_cfg=pdf_cfg,
+            summary_cfg=summary_cfg,
+            chat_client=chat_client,
+            photo_client=photo_client,
+            budget=budget,
+            verbose=verbose,
+            counters=counters,
+        )
+        updated += a_updated
+        pruned += a_pruned
+
     if verbose and mail_cfg.enabled:
         print(
             f"[mail-bridge] [accounts_processed={accounts_processed}] [updated={updated}] [pruned={pruned}]",
             flush=True,
         )
+    return updated, pruned, accounts_processed
+
+
+def _mail_attachment_ref(
+    *,
+    attachment_key: str,
+    account_email: str,
+    msg_id: str,
+    part_id: str,
+) -> str:
+    normalized_key = str(attachment_key or "").strip()
+    if normalized_key:
+        return hashlib.sha1(normalized_key.encode("utf-8")).hexdigest()
+    payload = {
+        "account_email": str(account_email or "").strip().lower(),
+        "msg_id": str(msg_id or "").strip(),
+        "part_id": str(part_id or "").strip(),
+    }
+    return hashlib.sha1(_json_compact(payload).encode("utf-8")).hexdigest()
+
+
+def _mail_attachment_registry_filepath(record: MailAttachmentRecord, *, kind: str) -> str:
+    return f"mail-attachment://{kind}/{record.attachment_ref}"
+
+
+def _mail_attachment_cursor(
+    conn: sqlite3.Connection,
+    *,
+    bridge_key: str,
+    account_email: str,
+) -> tuple[str, str]:
+    row = conn.execute(
+        """
+        SELECT last_inventoried_at, last_inventoried_msg_id
+        FROM mail_attachment_sync_state
+        WHERE bridge_key = ? AND account_email = ?
+        """,
+        (bridge_key, account_email),
+    ).fetchone()
+    if not row:
+        return "", ""
+    return str(row[0] or ""), str(row[1] or "")
+
+
+def _store_mail_attachment_cursor(
+    conn: sqlite3.Connection,
+    *,
+    bridge_key: str,
+    account_email: str,
+    last_inventoried_at: str,
+    last_inventoried_msg_id: str,
+) -> bool:
+    prior = _mail_attachment_cursor(conn, bridge_key=bridge_key, account_email=account_email)
+    current = (str(last_inventoried_at or ""), str(last_inventoried_msg_id or ""))
+    if prior == current:
+        return False
+    conn.execute(
+        """
+        INSERT INTO mail_attachment_sync_state (
+          bridge_key, account_email, last_inventoried_at, last_inventoried_msg_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(bridge_key, account_email) DO UPDATE SET
+          last_inventoried_at=excluded.last_inventoried_at,
+          last_inventoried_msg_id=excluded.last_inventoried_msg_id,
+          updated_at=excluded.updated_at
+        """,
+        (
+            bridge_key,
+            account_email,
+            current[0],
+            current[1],
+            now_iso(),
+        ),
+    )
+    return True
+
+
+def _fetch_attachment_inventory_messages(
+    inbox_conn: sqlite3.Connection,
+    *,
+    account_email: str,
+    cursor: tuple[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    sql = """
+        SELECT msg_id, account_email, inventoried_at
+        FROM message_attachment_inventory_state
+        WHERE account_email = ?
+    """
+    params: list[Any] = [account_email]
+    if cursor is not None:
+        sql += """
+          AND (
+            inventoried_at > ?
+            OR (inventoried_at = ? AND msg_id > ?)
+          )
+        """
+        params.extend([cursor[0], cursor[0], cursor[1]])
+    sql += " ORDER BY inventoried_at, msg_id"
+    rows = inbox_conn.execute(sql, params).fetchall()
+    return [
+        (str(row[0] or ""), str(row[1] or ""), str(row[2] or ""))
+        for row in rows
+        if str(row[0] or "").strip()
+    ]
+
+
+def _fetch_mail_attachment_records(
+    inbox_conn: sqlite3.Connection,
+    *,
+    msg_id: str,
+    account_email: str,
+    inventoried_at: str,
+) -> list[MailAttachmentRecord]:
+    has_attachment_key = _table_has_column(inbox_conn, "message_attachments", "attachment_key")
+    has_storage_kind = _table_has_column(inbox_conn, "message_attachments", "storage_kind")
+    has_storage_path = _table_has_column(inbox_conn, "message_attachments", "storage_path")
+    has_content_sha256 = _table_has_column(inbox_conn, "message_attachments", "content_sha256")
+    has_content_size = _table_has_column(inbox_conn, "message_attachments", "content_size_bytes")
+    has_materialized_at = _table_has_column(inbox_conn, "message_attachments", "materialized_at")
+    rows = inbox_conn.execute(
+        f"""
+        SELECT
+               {'attachment_key' if has_attachment_key else "'' AS attachment_key"},
+               part_id,
+               gmail_attachment_id,
+               mime_type,
+               filename,
+               size_bytes,
+               content_disposition,
+               content_id,
+               is_inline,
+               inventory_state,
+               {'storage_kind' if has_storage_kind else "'' AS storage_kind"},
+               {'storage_path' if has_storage_path else "'' AS storage_path"},
+               {'content_sha256' if has_content_sha256 else "'' AS content_sha256"},
+               {'content_size_bytes' if has_content_size else '0 AS content_size_bytes'},
+               {'materialized_at' if has_materialized_at else "'' AS materialized_at"}
+        FROM message_attachments
+        WHERE msg_id = ? AND account_email = ?
+        ORDER BY part_id
+        """,
+        (msg_id, account_email),
+    ).fetchall()
+    out: list[MailAttachmentRecord] = []
+    for row in rows:
+        attachment_key = str(row[0] or "").strip()
+        part_id = str(row[1] or "").strip()
+        if not part_id:
+            continue
+        out.append(
+            MailAttachmentRecord(
+                attachment_ref=_mail_attachment_ref(
+                    attachment_key=attachment_key,
+                    account_email=account_email,
+                    msg_id=msg_id,
+                    part_id=part_id,
+                ),
+                attachment_key=attachment_key,
+                msg_id=msg_id,
+                account_email=account_email,
+                part_id=part_id,
+                gmail_attachment_id=str(row[2] or "").strip(),
+                mime_type=str(row[3] or "").strip().lower(),
+                filename=str(row[4] or "").strip(),
+                size_bytes=int(row[5] or 0),
+                content_disposition=str(row[6] or "").strip(),
+                content_id=str(row[7] or "").strip(),
+                is_inline=bool(int(row[8] or 0)),
+                inventory_state=str(row[9] or "").strip(),
+                inventoried_at=str(inventoried_at or ""),
+                storage_kind=str(row[10] or "").strip(),
+                storage_path=str(row[11] or "").strip(),
+                content_sha256=str(row[12] or "").strip().lower(),
+                content_size_bytes=int(row[13] or 0),
+                materialized_at=str(row[14] or "").strip(),
+            )
+        )
+    return out
+
+
+def _preferred_attachment_extension(record: MailAttachmentRecord) -> str:
+    ext = Path(record.filename).suffix.lower()
+    if ext in DOC_EXTS | PHOTO_EXTS:
+        return ".jpg" if ext == ".jpe" else ext
+    guessed = str(mimetypes.guess_extension(record.mime_type or "") or "").lower()
+    if guessed in {".jpe", ".jpeg"}:
+        return ".jpg"
+    if guessed in DOC_EXTS | PHOTO_EXTS:
+        return guessed
+    return ".bin"
+
+
+def _attachment_cache_path(cache_root: Path, record: MailAttachmentRecord) -> Path:
+    ext = _preferred_attachment_extension(record)
+    return cache_root / record.attachment_ref[:2] / f"{record.attachment_ref}{ext}"
+
+
+def _iter_raw_parts(part: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    yield part
+    for nested in list(part.get("parts") or []):
+        if isinstance(nested, dict):
+            yield from _iter_raw_parts(nested)
+
+
+def _find_raw_attachment_part(raw_message: dict[str, Any], record: MailAttachmentRecord) -> dict[str, Any] | None:
+    payload = raw_message.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    for part in _iter_raw_parts(payload):
+        part_id = str(part.get("partId") or "").strip()
+        body = part.get("body") or {}
+        attachment_id = str(body.get("attachmentId") or "").strip()
+        if part_id and part_id == record.part_id:
+            return part
+        if record.gmail_attachment_id and attachment_id == record.gmail_attachment_id:
+            return part
+    return None
+
+
+def _decode_attachment_body_data(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + padding).encode("utf-8"))
+
+
+def _materialize_attachment_from_raw_message(
+    inbox_conn: sqlite3.Connection,
+    *,
+    cache_root: Path,
+    record: MailAttachmentRecord,
+) -> tuple[Path | None, str, str]:
+    if not _table_exists(inbox_conn, "raw_messages"):
+        return None, "unmaterialized", "raw_messages table not available for inline attachment fallback"
+    row = inbox_conn.execute(
+        """
+        SELECT raw_json
+        FROM raw_messages
+        WHERE msg_id = ? AND account_email = ?
+        """,
+        (record.msg_id, record.account_email),
+    ).fetchone()
+    if not row:
+        return None, "missing-raw-message", "raw_messages row not found"
+    try:
+        raw_message = json.loads(str(row[0] or "{}"))
+    except json.JSONDecodeError:
+        return None, "invalid-raw-message", "raw_messages.raw_json is not valid JSON"
+    part = _find_raw_attachment_part(raw_message, record)
+    if not isinstance(part, dict):
+        return None, "missing-attachment-part", "attachment part not found in raw message payload"
+    body = part.get("body") or {}
+    data = str(body.get("data") or "").strip()
+    if not data:
+        return None, "metadata-only-no-bytes", "attachment inventory row has no inline body.data bytes"
+    try:
+        payload = _decode_attachment_body_data(data)
+    except Exception as exc:  # noqa: BLE001
+        return None, "invalid-body-data", str(exc)[:300]
+    if not payload:
+        return None, "empty-bytes", "attachment body.data decoded to empty bytes"
+    path = _attachment_cache_path(cache_root, record)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists() or path.read_bytes() != payload:
+        path.write_bytes(payload)
+    return path, "ok", ""
+
+
+def _materialized_attachment_path_from_storage(
+    *,
+    bridge_db_path: str,
+    record: MailAttachmentRecord,
+) -> tuple[Path | None, str, str]:
+    storage_kind = str(record.storage_kind or "").strip().lower()
+    storage_path = str(record.storage_path or "").strip()
+    if not storage_kind:
+        return None, "unmaterialized", "attachment row has no storage_kind"
+    if storage_kind != "file":
+        return None, "unsupported-storage-kind", f"unsupported storage_kind: {storage_kind}"
+    if not storage_path:
+        return None, "missing-storage-path", "attachment row has storage_kind=file but no storage_path"
+    base_dir = Path(str(bridge_db_path or "")).expanduser().resolve().parent
+    path = (base_dir / storage_path).resolve()
+    try:
+        path.relative_to(base_dir)
+    except ValueError:
+        return None, "unsafe-storage-path", f"storage_path escapes inbox-vault db parent: {storage_path}"
+    if not path.exists() or not path.is_file():
+        return None, "missing-materialized-file", f"materialized attachment file missing: {storage_path}"
+    return path, "ok", ""
+
+
+def _materialize_mail_attachment(
+    inbox_conn: sqlite3.Connection,
+    *,
+    cache_root: Path,
+    bridge_db_path: str,
+    record: MailAttachmentRecord,
+) -> tuple[Path | None, str, str]:
+    materialized_path, status, error = _materialized_attachment_path_from_storage(
+        bridge_db_path=bridge_db_path,
+        record=record,
+    )
+    if materialized_path is not None:
+        return materialized_path, status, error
+    # Backward-compatible fallback for inline bytes persisted in raw_messages.
+    if status in {"unmaterialized", "missing-storage-path"}:
+        return _materialize_attachment_from_raw_message(
+            inbox_conn,
+            cache_root=cache_root,
+            record=record,
+        )
+    return None, status, error
+
+
+def _supported_attachment_kind(
+    record: MailAttachmentRecord,
+    *,
+    materialized_path: Path,
+) -> str:
+    ext = materialized_path.suffix.lower()
+    mime = (record.mime_type or "").strip().lower()
+    if ext in DOC_EXTS or mime in {"application/pdf", "text/plain", "text/markdown", "text/rtf"}:
+        return "doc"
+    if ext in PHOTO_EXTS or mime.startswith("image/"):
+        return "photo"
+    return "unsupported"
+
+
+def _mail_attachment_provenance_json(record: MailAttachmentRecord) -> str:
+    payload = {
+        "origin_kind": "mail_attachment",
+        "attachment_ref": record.attachment_ref,
+        "attachment_key": record.attachment_key,
+        "msg_id": record.msg_id,
+        "account_email": record.account_email,
+        "part_id": record.part_id,
+        "gmail_attachment_id": record.gmail_attachment_id,
+        "mime_type": record.mime_type,
+        "filename": record.filename,
+        "size_bytes": int(record.size_bytes),
+        "content_disposition": record.content_disposition,
+        "content_id": record.content_id,
+        "is_inline": bool(record.is_inline),
+        "inventoried_at": record.inventoried_at,
+        "storage_kind": record.storage_kind,
+        "storage_path": record.storage_path,
+        "content_sha256": record.content_sha256,
+        "content_size_bytes": int(record.content_size_bytes),
+        "materialized_at": record.materialized_at,
+    }
+    return _json_compact(payload)
+
+
+def upsert_mail_attachment_bridge(
+    conn: sqlite3.Connection,
+    *,
+    record: MailAttachmentRecord,
+    target_kind: str,
+    registry_table: str,
+    registry_filepath: str,
+    materialized_input_path: str,
+    ingest_status: str,
+    ingest_error: str,
+    indexed: bool,
+) -> None:
+    ts = now_iso()
+    indexed_at = ts if indexed else None
+    conn.execute(
+        """
+        INSERT INTO mail_attachment_bridge (
+          attachment_ref, attachment_key, source, msg_id, account_email, part_id, gmail_attachment_id,
+          mime_type, filename, size_bytes, content_disposition, content_id, is_inline,
+          inventory_state, inventoried_at, storage_kind, storage_path, content_sha256,
+          content_size_bytes, materialized_at, target_kind, registry_table, registry_filepath,
+          materialized_input_path, ingest_status, ingest_error, indexed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attachment_ref) DO UPDATE SET
+          attachment_key=excluded.attachment_key,
+          source=excluded.source,
+          msg_id=excluded.msg_id,
+          account_email=excluded.account_email,
+          part_id=excluded.part_id,
+          gmail_attachment_id=excluded.gmail_attachment_id,
+          mime_type=excluded.mime_type,
+          filename=excluded.filename,
+          size_bytes=excluded.size_bytes,
+          content_disposition=excluded.content_disposition,
+          content_id=excluded.content_id,
+          is_inline=excluded.is_inline,
+          inventory_state=excluded.inventory_state,
+          inventoried_at=excluded.inventoried_at,
+          storage_kind=excluded.storage_kind,
+          storage_path=excluded.storage_path,
+          content_sha256=excluded.content_sha256,
+          content_size_bytes=excluded.content_size_bytes,
+          materialized_at=excluded.materialized_at,
+          target_kind=excluded.target_kind,
+          registry_table=excluded.registry_table,
+          registry_filepath=excluded.registry_filepath,
+          materialized_input_path=excluded.materialized_input_path,
+          ingest_status=excluded.ingest_status,
+          ingest_error=excluded.ingest_error,
+          indexed_at=excluded.indexed_at,
+          updated_at=excluded.updated_at
+        """,
+        (
+            record.attachment_ref,
+            record.attachment_key,
+            MAIL_ATTACHMENT_SOURCE,
+            record.msg_id,
+            record.account_email,
+            record.part_id,
+            record.gmail_attachment_id,
+            record.mime_type,
+            record.filename,
+            int(record.size_bytes),
+            record.content_disposition,
+            record.content_id,
+            1 if record.is_inline else 0,
+            record.inventory_state,
+            record.inventoried_at,
+            record.storage_kind,
+            record.storage_path,
+            record.content_sha256,
+            int(record.content_size_bytes),
+            record.materialized_at,
+            target_kind,
+            registry_table,
+            registry_filepath,
+            materialized_input_path,
+            ingest_status,
+            ingest_error[:500],
+            indexed_at,
+            ts,
+        ),
+    )
+
+
+def _mail_attachment_bridge_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    attachment_ref: str,
+) -> tuple[str, ...] | None:
+    row = conn.execute(
+        """
+        SELECT
+          attachment_key,
+          source,
+          msg_id,
+          account_email,
+          part_id,
+          gmail_attachment_id,
+          mime_type,
+          filename,
+          CAST(COALESCE(size_bytes, 0) AS TEXT),
+          content_disposition,
+          content_id,
+          CAST(COALESCE(is_inline, 0) AS TEXT),
+          inventory_state,
+          inventoried_at,
+          storage_kind,
+          storage_path,
+          content_sha256,
+          CAST(COALESCE(content_size_bytes, 0) AS TEXT),
+          materialized_at,
+          target_kind,
+          registry_table,
+          registry_filepath,
+          materialized_input_path,
+          ingest_status,
+          ingest_error
+        FROM mail_attachment_bridge
+        WHERE attachment_ref = ?
+        """,
+        (attachment_ref,),
+    ).fetchone()
+    if not row:
+        return None
+    return tuple(str(value or "") for value in row)
+
+
+def _delete_attachment_registry_row(conn: sqlite3.Connection, *, registry_table: str, registry_filepath: str) -> int:
+    if registry_table not in {"docs_registry", "photos_registry"} or not registry_filepath:
+        return 0
+    return int(
+        conn.execute(
+            f"DELETE FROM {registry_table} WHERE filepath = ?",
+            (registry_filepath,),
+        ).rowcount
+        or 0
+    )
+
+
+def _prune_mail_attachment_bridge(
+    conn: sqlite3.Connection,
+    *,
+    live_records: dict[str, set[str]],
+    active_accounts: set[str],
+) -> int:
+    rows = conn.execute(
+        """
+        SELECT attachment_ref, account_email, registry_table, registry_filepath
+        FROM mail_attachment_bridge
+        WHERE source = ?
+        """,
+        (MAIL_ATTACHMENT_SOURCE,),
+    ).fetchall()
+    deleted = 0
+    for attachment_ref, account_email, registry_table, registry_filepath in rows:
+        account = str(account_email or "")
+        keep_refs = live_records.get(account)
+        should_delete = False
+        if account not in active_accounts:
+            should_delete = True
+        elif keep_refs is not None and str(attachment_ref or "") not in keep_refs:
+            should_delete = True
+        if not should_delete:
+            continue
+        deleted += _delete_attachment_registry_row(
+            conn,
+            registry_table=str(registry_table or ""),
+            registry_filepath=str(registry_filepath or ""),
+        )
+        deleted += int(
+            conn.execute(
+                "DELETE FROM mail_attachment_bridge WHERE attachment_ref = ?",
+                (str(attachment_ref or ""),),
+            ).rowcount
+            or 0
+        )
+    return deleted
+
+
+def _prune_mail_attachment_sync_state(
+    conn: sqlite3.Connection,
+    *,
+    bridge_key: str,
+    active_accounts: set[str],
+) -> int:
+    rows = conn.execute(
+        """
+        SELECT account_email
+        FROM mail_attachment_sync_state
+        WHERE bridge_key = ?
+        """,
+        (bridge_key,),
+    ).fetchall()
+    deleted = 0
+    for (account_email,) in rows:
+        account = str(account_email or "")
+        if account in active_accounts:
+            continue
+        deleted += int(
+            conn.execute(
+                "DELETE FROM mail_attachment_sync_state WHERE bridge_key = ? AND account_email = ?",
+                (bridge_key, account),
+            ).rowcount
+            or 0
+        )
+    return deleted
+
+
+def sync_mail_attachments_bridge(
+    conn: sqlite3.Connection,
+    *,
+    mail_cfg: MailBridgeConfig,
+    full_scan: bool,
+    dry_run: bool,
+    deadline: float,
+    text_cap: int,
+    pdf_cfg: PdfParseConfig,
+    summary_cfg: SummaryConfig,
+    chat_client: LocalOpenAIChatClient | None,
+    photo_client: LocalPhotoAnalyzerClient | None,
+    budget: WorkBudget | None = None,
+    verbose: bool = False,
+    counters: dict[str, int] | None = None,
+) -> tuple[int, int, int]:
+    if not mail_cfg.enabled or not mail_cfg.import_attachments:
+        return 0, 0, 0
+
+    bridge_key = _mail_bridge_key(mail_cfg)
+    updated = 0
+    pruned = 0
+    accounts_processed = 0
+    live_records: dict[str, set[str]] = {}
+    interrupted = False
+    cache_root = conn.execute("PRAGMA database_list").fetchone()
+    db_file = Path(str(cache_root[2])) if cache_root and str(cache_root[2] or "").strip() else ROOT / "state" / "vault_registry.db"
+    attachment_cache_root = db_file.parent / "mail_attachment_cache"
+
+    inbox_conn = _connect_mail_bridge_db(mail_cfg)
+    try:
+        accounts = _mail_account_scope(inbox_conn, include_accounts=mail_cfg.include_accounts)
+        active_accounts = set(accounts)
+        for account_email in accounts:
+            if should_stop(deadline, budget):
+                interrupted = True
+                break
+            cursor = None if full_scan else _mail_attachment_cursor(
+                conn,
+                bridge_key=bridge_key,
+                account_email=account_email,
+            )
+            messages = _fetch_attachment_inventory_messages(
+                inbox_conn,
+                account_email=account_email,
+                cursor=cursor,
+            )
+            if full_scan:
+                live_records[account_email] = set()
+            accounts_processed += 1
+            max_cursor = ("", "")
+            try:
+                conn.execute("BEGIN")
+                for msg_id, acct, inventoried_at in messages:
+                    if should_stop(deadline, budget):
+                        interrupted = True
+                        break
+                    records = _fetch_mail_attachment_records(
+                        inbox_conn,
+                        msg_id=msg_id,
+                        account_email=acct,
+                        inventoried_at=inventoried_at,
+                    )
+                    if full_scan:
+                        live_records[account_email].update(record.attachment_ref for record in records)
+                    for record in records:
+                        if should_stop(deadline, budget):
+                            interrupted = True
+                            break
+                        materialized_path, material_status, material_error = _materialize_mail_attachment(
+                            inbox_conn,
+                            cache_root=attachment_cache_root,
+                            bridge_db_path=mail_cfg.db_path,
+                            record=record,
+                        )
+                        target_kind = ""
+                        registry_table = ""
+                        registry_filepath = ""
+                        ingest_status = material_status
+                        ingest_error = material_error
+                        indexed = False
+                        if materialized_path is not None:
+                            target_kind = _supported_attachment_kind(
+                                record,
+                                materialized_path=materialized_path,
+                            )
+                            if target_kind == "doc":
+                                registry_table = "docs_registry"
+                                registry_filepath = _mail_attachment_registry_filepath(record, kind="doc")
+                            elif target_kind == "photo":
+                                registry_table = "photos_registry"
+                                registry_filepath = _mail_attachment_registry_filepath(record, kind="photo")
+                            else:
+                                ingest_status = "unsupported"
+                                ingest_error = f"unsupported attachment type: mime={record.mime_type} ext={materialized_path.suffix.lower()}"
+
+                        if materialized_path is not None and target_kind in {"doc", "photo"}:
+                            provenance_json = _mail_attachment_provenance_json(record)
+                            if budget is not None and not budget.consume():
+                                interrupted = True
+                                break
+                            if not dry_run:
+                                if target_kind == "doc":
+                                    result = index_doc_file(
+                                        conn,
+                                        materialized_path,
+                                        MAIL_ATTACHMENT_SOURCE,
+                                        text_cap,
+                                        dry_run=False,
+                                        pdf_cfg=pdf_cfg,
+                                        summary_cfg=summary_cfg,
+                                        chat_client=chat_client,
+                                        verbose=verbose,
+                                        registry_filepath=registry_filepath,
+                                        provenance_json=provenance_json,
+                                    )
+                                    indexed = bool(result.indexed)
+                                    if indexed and counters is not None:
+                                        counters["docs_indexed"] += 1
+                                        counters["summary_updated"] += 1 if result.summary_updated else 0
+                                        counters["summary_failed"] += 1 if result.summary_failed else 0
+                                else:
+                                    indexed = index_photo_file(
+                                        conn,
+                                        materialized_path,
+                                        MAIL_ATTACHMENT_SOURCE,
+                                        dry_run=False,
+                                        photo_client=photo_client,
+                                        registry_filepath=registry_filepath,
+                                        provenance_json=provenance_json,
+                                    )
+                                    if indexed and counters is not None:
+                                        counters["photos_indexed"] += 1
+                                ingest_status = "indexed" if indexed else "unchanged"
+                            else:
+                                ingest_status = "dry-run"
+                        new_snapshot = (
+                            record.attachment_key,
+                            MAIL_ATTACHMENT_SOURCE,
+                            record.msg_id,
+                            record.account_email,
+                            record.part_id,
+                            record.gmail_attachment_id,
+                            record.mime_type,
+                            record.filename,
+                            str(int(record.size_bytes)),
+                            record.content_disposition,
+                            record.content_id,
+                            "1" if record.is_inline else "0",
+                            record.inventory_state,
+                            record.inventoried_at,
+                            record.storage_kind,
+                            record.storage_path,
+                            record.content_sha256,
+                            str(int(record.content_size_bytes)),
+                            record.materialized_at,
+                            target_kind if target_kind in {"doc", "photo"} else "",
+                            registry_table,
+                            registry_filepath,
+                            str(materialized_path) if materialized_path is not None else "",
+                            ingest_status,
+                            ingest_error[:500],
+                        )
+                        if _mail_attachment_bridge_snapshot(conn, attachment_ref=record.attachment_ref) == new_snapshot:
+                            max_cursor = (inventoried_at, msg_id)
+                            continue
+                        upsert_mail_attachment_bridge(
+                            conn,
+                            record=record,
+                            target_kind=target_kind if target_kind in {"doc", "photo"} else "",
+                            registry_table=registry_table,
+                            registry_filepath=registry_filepath,
+                            materialized_input_path=str(materialized_path) if materialized_path is not None else "",
+                            ingest_status=ingest_status,
+                            ingest_error=ingest_error,
+                            indexed=indexed,
+                        )
+                        updated += 1
+                    max_cursor = (inventoried_at, msg_id)
+                    if interrupted:
+                        break
+                if full_scan:
+                    _store_mail_attachment_cursor(
+                        conn,
+                        bridge_key=bridge_key,
+                        account_email=account_email,
+                        last_inventoried_at=max_cursor[0],
+                        last_inventoried_msg_id=max_cursor[1],
+                    )
+                elif max_cursor != ("", ""):
+                    _store_mail_attachment_cursor(
+                        conn,
+                        bridge_key=bridge_key,
+                        account_email=account_email,
+                        last_inventoried_at=max_cursor[0],
+                        last_inventoried_msg_id=max_cursor[1],
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            if interrupted:
+                break
+        if full_scan and not dry_run and not interrupted:
+            conn.execute("BEGIN")
+            pruned += _prune_mail_attachment_bridge(
+                conn,
+                live_records=live_records,
+                active_accounts=active_accounts,
+            )
+            pruned += _prune_mail_attachment_sync_state(
+                conn,
+                bridge_key=bridge_key,
+                active_accounts=active_accounts,
+            )
+            conn.commit()
+    finally:
+        inbox_conn.close()
     return updated, pruned, accounts_processed
 
 
@@ -2449,7 +3361,7 @@ def upsert_doc(
     conn: sqlite3.Connection,
     *,
     checksum: str,
-    filepath: Path,
+    filepath: str | Path,
     source: str,
     text_content: str,
     text_chars_total: int,
@@ -2467,6 +3379,7 @@ def upsert_doc(
     primary_date: str,
     size: int,
     mtime: float,
+    provenance_json: str = "",
 ) -> None:
     ts = now_iso()
     conn.execute(
@@ -2475,8 +3388,8 @@ def upsert_doc(
           checksum, filepath, source, text_content, text_chars_total, text_capped,
           parser, ocr_used, extraction_method,
           summary_text, summary_model, summary_hash, summary_status, summary_updated_at, summary_error,
-          dates_json, primary_date, size, mtime, indexed_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          dates_json, primary_date, provenance_json, size, mtime, indexed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(filepath) DO UPDATE SET
           checksum=excluded.checksum,
           source=excluded.source,
@@ -2494,6 +3407,7 @@ def upsert_doc(
           summary_error=excluded.summary_error,
           dates_json=excluded.dates_json,
           primary_date=excluded.primary_date,
+          provenance_json=excluded.provenance_json,
           size=excluded.size,
           mtime=excluded.mtime,
           updated_at=excluded.updated_at
@@ -2516,6 +3430,7 @@ def upsert_doc(
             summary_error,
             dates_json,
             primary_date,
+            provenance_json,
             size,
             mtime,
             ts,
@@ -2528,7 +3443,7 @@ def upsert_photo(
     conn: sqlite3.Connection,
     *,
     checksum: str,
-    filepath: Path,
+    filepath: str | Path,
     source: str,
     date_taken: Optional[str],
     size: int,
@@ -2547,6 +3462,7 @@ def upsert_photo(
     ocr_updated_at: str,
     dates_json: str,
     primary_date: str,
+    provenance_json: str = "",
 ) -> None:
     ts = now_iso()
     note_parts = []
@@ -2565,8 +3481,8 @@ def upsert_photo(
           category_primary, category_secondary, taxonomy, caption,
           analyzer_model, analyzer_status, analyzer_error, analyzer_raw, analyzed_at,
           ocr_text, ocr_status, ocr_source, ocr_updated_at,
-          dates_json, primary_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          dates_json, primary_date, provenance_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(filepath) DO UPDATE SET
           checksum=excluded.checksum,
           source=excluded.source,
@@ -2589,7 +3505,8 @@ def upsert_photo(
           ocr_source=excluded.ocr_source,
           ocr_updated_at=excluded.ocr_updated_at,
           dates_json=excluded.dates_json,
-          primary_date=excluded.primary_date
+          primary_date=excluded.primary_date,
+          provenance_json=excluded.provenance_json
         """,
         (
             checksum,
@@ -2616,11 +3533,12 @@ def upsert_photo(
             ocr_updated_at,
             dates_json,
             primary_date,
+            provenance_json,
         ),
     )
 
 
-def existing_by_filepath(conn: sqlite3.Connection, table: str, filepath: Path) -> Optional[tuple[float, int]]:
+def existing_by_filepath(conn: sqlite3.Connection, table: str, filepath: str | Path) -> Optional[tuple[float, int]]:
     row = conn.execute(
         f"SELECT mtime, size FROM {table} WHERE filepath = ?",
         (str(filepath),),
@@ -2630,7 +3548,7 @@ def existing_by_filepath(conn: sqlite3.Connection, table: str, filepath: Path) -
     return float(row[0]), int(row[1])
 
 
-def _has_dates_payload(conn: sqlite3.Connection, table: str, filepath: Path) -> bool:
+def _has_dates_payload(conn: sqlite3.Connection, table: str, filepath: str | Path) -> bool:
     row = conn.execute(
         f"SELECT COALESCE(TRIM(dates_json), '') FROM {table} WHERE filepath = ?",
         (str(filepath),),
@@ -2735,12 +3653,15 @@ def index_doc_file(
     summary_cfg: SummaryConfig,
     chat_client: LocalOpenAIChatClient | None,
     verbose: bool = False,
+    registry_filepath: str | None = None,
+    provenance_json: str = "",
 ) -> DocIndexResult:
     stat = path.stat()
-    prior = existing_by_filepath(conn, "docs_registry", path)
+    registry_key = str(registry_filepath or path)
+    prior = existing_by_filepath(conn, "docs_registry", registry_key)
     if (
         prior
-        and _has_dates_payload(conn, "docs_registry", path)
+        and _has_dates_payload(conn, "docs_registry", registry_key)
         and int(prior[0]) == int(stat.st_mtime)
         and int(prior[1]) == int(stat.st_size)
     ):
@@ -2768,7 +3689,7 @@ def index_doc_file(
         upsert_doc(
             conn,
             checksum=checksum,
-            filepath=path,
+            filepath=registry_key,
             source=source,
             text_content=text_capped,
             text_chars_total=total_chars,
@@ -2784,6 +3705,7 @@ def index_doc_file(
             summary_error=summary.error,
             dates_json=dates_json,
             primary_date=primary_date,
+            provenance_json=provenance_json,
             size=stat.st_size,
             mtime=stat.st_mtime,
         )
@@ -2798,14 +3720,17 @@ def index_photo_file(
     *,
     photo_client: LocalPhotoAnalyzerClient | None,
     force_analyze: bool = False,
+    registry_filepath: str | None = None,
+    provenance_json: str = "",
 ) -> bool:
     stat = path.stat()
-    prior = existing_by_filepath(conn, "photos_registry", path)
-    prior_snapshot = photo_registry_snapshot(conn, path)
+    registry_key = str(registry_filepath or path)
+    prior = existing_by_filepath(conn, "photos_registry", registry_key)
+    prior_snapshot = photo_registry_snapshot(conn, registry_key)
     if (
         (not force_analyze)
         and prior
-        and _has_dates_payload(conn, "photos_registry", path)
+        and _has_dates_payload(conn, "photos_registry", registry_key)
         and int(prior[0]) == int(stat.st_mtime)
         and int(prior[1]) == int(stat.st_size)
     ):
@@ -2880,13 +3805,13 @@ def index_photo_file(
                 SET analyzed_at = ?, ocr_updated_at = ?
                 WHERE filepath = ?
                 """,
-                (ocr_updated_at, ocr_updated_at, str(path)),
+                (ocr_updated_at, ocr_updated_at, registry_key),
             )
             return False
         upsert_photo(
             conn,
             checksum=checksum,
-            filepath=path,
+            filepath=registry_key,
             source=source,
             date_taken=date_taken,
             size=stat.st_size,
@@ -2905,6 +3830,7 @@ def index_photo_file(
             ocr_updated_at=ocr_updated_at,
             dates_json=dates_json,
             primary_date=primary_date,
+            provenance_json=provenance_json,
         )
     return True
 
@@ -3183,7 +4109,7 @@ def count_pending_photo_backfill(conn: sqlite3.Connection, limit: int) -> int:
     return min(total, int(limit))
 
 
-def photo_registry_snapshot(conn: sqlite3.Connection, filepath: Path) -> tuple[str, ...] | None:
+def photo_registry_snapshot(conn: sqlite3.Connection, filepath: str | Path) -> tuple[str, ...] | None:
     row = conn.execute(
         """
         SELECT
@@ -3629,8 +4555,14 @@ def run(cfg: Config, dry_run: bool) -> int:
                     full_scan=bool(cfg.skip_inbox),
                     dry_run=dry_run,
                     deadline=deadline,
+                    text_cap=cfg.text_cap,
+                    pdf_cfg=cfg.pdf_parse,
+                    summary_cfg=cfg.summary,
+                    chat_client=chat_client,
+                    photo_client=photo_client,
                     budget=budget,
                     verbose=cfg.verbose,
+                    counters=counters,
                 )
                 counters["mail_indexed"] += m_updated
                 counters["mail_pruned"] += m_pruned

@@ -210,6 +210,8 @@ def _apply_config_defaults(args: argparse.Namespace) -> argparse.Namespace:
     setattr(args, "_mail_bridge_include_accounts", _config_list(mail, "include_accounts"))
     import_summary = _config_bool(mail, "import_summary")
     setattr(args, "_mail_bridge_import_summary", True if import_summary is None else bool(import_summary))
+    import_attachments = _config_bool(mail, "import_attachments")
+    setattr(args, "_mail_bridge_import_attachments", True if import_attachments is None else bool(import_attachments))
     max_body_chunks = _config_int(mail, "max_body_chunks")
     setattr(args, "_mail_bridge_max_body_chunks", 12 if max_body_chunks is None else max(0, int(max_body_chunks)))
 
@@ -365,6 +367,17 @@ def _append_registry_sync_flags(cmd: list[str], args: argparse.Namespace) -> Non
         cmd += ["--mail-bridge-include-account", str(account)]
     if getattr(args, "_mail_bridge_import_summary", True) is False:
         cmd.append("--mail-bridge-no-import-summary")
+    if getattr(args, "_mail_bridge_import_attachments", True) is False:
+        cmd.append("--mail-bridge-no-import-attachments")
+
+
+def _resolve_vector_update_source_mode(args: argparse.Namespace) -> str:
+    source_mode = _resolve_source_mode(args)
+    if source_mode == "mail" and getattr(args, "_mail_bridge_enabled", False):
+        # Mail bridge runs can also create mail-derived docs/photos attachment rows.
+        # Vector update should pick those up without widening registry sync itself.
+        return "all"
+    return source_mode
 
 
 def _upgrade_levels_selected(index_level: str) -> list[str]:
@@ -422,7 +435,9 @@ def cmd_update(args: argparse.Namespace) -> int:
         "--updated-since",
         update_started_at,
     ]
-    _append_common_vector_flags(vector_cmd, args)
+    vector_args = argparse.Namespace(**vars(args))
+    setattr(vector_args, "source", _resolve_vector_update_source_mode(args))
+    _append_common_vector_flags(vector_cmd, vector_args)
     if args.verbose:
         vector_cmd.append("--verbose")
     return run_cmd(vector_cmd, label="update:vector-index", verbose=args.verbose)
@@ -491,7 +506,9 @@ def cmd_repair(args: argparse.Namespace) -> int:
         "--updated-since",
         repair_started_at,
     ]
-    _append_common_vector_flags(vector_cmd, args)
+    vector_args = argparse.Namespace(**vars(args))
+    setattr(vector_args, "source", _resolve_vector_update_source_mode(args))
+    _append_common_vector_flags(vector_cmd, vector_args)
     if args.verbose:
         vector_cmd.append("--verbose")
     return run_cmd(vector_cmd, label="repair:vector-index", verbose=args.verbose)

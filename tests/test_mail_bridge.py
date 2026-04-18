@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import base64
 import hashlib
 import json
 import math
@@ -12,7 +13,15 @@ import vault_db
 import vault_registry_sync
 from vault_db import connect_vault_db
 from vault_redaction import RedactionConfig
-from vault_registry_sync import MailBridgeConfig, ensure_db, sync_mail_bridge
+from vault_registry_sync import (
+    MailBridgeConfig,
+    PdfParseConfig,
+    PhotoAnalysisConfig,
+    PhotoAnalysisResult,
+    SummaryConfig,
+    ensure_db,
+    sync_mail_bridge,
+)
 from vault_vector_index import chunk_text, query_index, update_index
 
 
@@ -216,6 +225,125 @@ def _append_long_mail_message(inbox_db: Path) -> None:
         conn.close()
 
 
+def _seed_inbox_attachment_inventory(inbox_db: Path) -> None:
+    note_bytes = b"Invoice note for jane.doe@example.com with due date 2026-04-01."
+    png_bytes = base64.urlsafe_b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0YQAAAAASUVORK5CYII="
+    )
+    note_rel = Path("attachment-cache") / "aa" / "att-note-inline.txt"
+    png_rel = Path("attachment-cache") / "bb" / "att-receipt-inline.png"
+    note_path = inbox_db.parent / note_rel
+    png_path = inbox_db.parent / png_rel
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.write_bytes(note_bytes)
+    png_path.write_bytes(png_bytes)
+
+    conn = sqlite3.connect(str(inbox_db))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE message_attachments (
+              msg_id TEXT NOT NULL,
+              account_email TEXT NOT NULL,
+              attachment_key TEXT NOT NULL DEFAULT '',
+              part_id TEXT NOT NULL,
+              gmail_attachment_id TEXT NOT NULL DEFAULT '',
+              mime_type TEXT NOT NULL DEFAULT '',
+              filename TEXT NOT NULL DEFAULT '',
+              size_bytes INTEGER,
+              content_disposition TEXT NOT NULL DEFAULT '',
+              content_id TEXT NOT NULL DEFAULT '',
+              is_inline INTEGER NOT NULL DEFAULT 0,
+              inventory_state TEXT NOT NULL DEFAULT 'metadata_only',
+              storage_kind TEXT NOT NULL DEFAULT '',
+              storage_path TEXT NOT NULL DEFAULT '',
+              content_sha256 TEXT NOT NULL DEFAULT '',
+              content_size_bytes INTEGER NOT NULL DEFAULT 0,
+              materialized_at TEXT NOT NULL DEFAULT '',
+              last_seen_at TEXT NOT NULL,
+              PRIMARY KEY (msg_id, part_id)
+            );
+
+            CREATE TABLE message_attachment_inventory_state (
+              msg_id TEXT PRIMARY KEY,
+              account_email TEXT NOT NULL,
+              inventory_state TEXT NOT NULL DEFAULT 'metadata_only',
+              attachment_count INTEGER NOT NULL DEFAULT 0,
+              inventoried_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO message_attachments (
+              msg_id, account_email, attachment_key, part_id, gmail_attachment_id, mime_type, filename,
+              size_bytes, content_disposition, content_id, is_inline, inventory_state,
+              storage_kind, storage_path, content_sha256, content_size_bytes, materialized_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "msg-a-2",
+                    "acct-a@example.com",
+                    "att-note-inline",
+                    "2",
+                    "",
+                    "text/plain",
+                    "invoice-note.txt",
+                    len(note_bytes),
+                    "attachment",
+                    "",
+                    0,
+                    "metadata_only",
+                    "file",
+                    str(note_rel),
+                    hashlib.sha256(note_bytes).hexdigest(),
+                    len(note_bytes),
+                    "2026-03-21T10:35:00+00:00",
+                    "2026-03-21T10:35:00+00:00",
+                ),
+                (
+                    "msg-a-2",
+                    "acct-a@example.com",
+                    "att-receipt-inline",
+                    "3",
+                    "",
+                    "image/png",
+                    "receipt.png",
+                    len(png_bytes),
+                    "attachment",
+                    "",
+                    0,
+                    "metadata_only",
+                    "file",
+                    str(png_rel),
+                    hashlib.sha256(png_bytes).hexdigest(),
+                    len(png_bytes),
+                    "2026-03-21T10:35:00+00:00",
+                    "2026-03-21T10:35:00+00:00",
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO message_attachment_inventory_state (
+              msg_id, account_email, inventory_state, attachment_count, inventoried_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "msg-a-2",
+                "acct-a@example.com",
+                "metadata_only",
+                2,
+                "2026-03-21T10:35:00+00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _mail_cfg(
     inbox_db: Path,
     *,
@@ -229,6 +357,36 @@ def _mail_cfg(
         include_accounts=include_accounts,
         import_summary=import_summary,
     )
+
+
+class _FakeChatClient:
+    def chat_json(self, messages, *, max_tokens, temperature):
+        del messages, max_tokens, temperature
+        return {"summary": "Invoice attachment summary with due date."}
+
+
+class _FakePhotoClient:
+    def __init__(self) -> None:
+        self.cfg = PhotoAnalysisConfig(
+            enabled=True,
+            analyze_url="http://127.0.0.1:8081/analyze",
+            timeout_seconds=30,
+            force=False,
+        )
+
+    def analyze(self, _path: Path) -> PhotoAnalysisResult:
+        return PhotoAnalysisResult(
+            status="ok",
+            route_kind="photo",
+            taxonomy="docs",
+            caption="Expense receipt attachment",
+            category_primary="receipt",
+            category_secondary="expense",
+            analyzer_model="test-photo-model",
+            analyzer_error="",
+            analyzer_raw='{"caption":"Expense receipt attachment","text_raw":"Total $42.00"}',
+            ocr_text="Total $42.00",
+        )
 
 
 def _set_plaintext_inbox(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -606,6 +764,307 @@ def test_mail_indexing_search_and_disabled_source_selection(
         as_json=True,
     )
     assert rc == 2
+
+
+def test_mail_bridge_ingests_inline_attachments_into_docs_and_photos(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+    _seed_inbox_attachment_inventory(inbox_db)
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        updated, pruned, accounts_processed = sync_mail_bridge(
+            reg,
+            mail_cfg=_mail_cfg(inbox_db, include_accounts=("acct-a@example.com",)),
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            text_cap=40000,
+            pdf_cfg=PdfParseConfig(
+                enabled=False,
+                parse_url="",
+                timeout_seconds=60,
+                profile="auto",
+            ),
+            summary_cfg=SummaryConfig(
+                enabled=True,
+                base_url="http://127.0.0.1:8080/v1",
+                model="test-summary-model",
+                api_key="",
+                timeout_seconds=30,
+                max_input_chars=12000,
+                max_output_chars=650,
+            ),
+            chat_client=_FakeChatClient(),
+            photo_client=_FakePhotoClient(),
+            verbose=False,
+            counters={
+                "docs_indexed": 0,
+                "photos_indexed": 0,
+                "mail_indexed": 0,
+                "mail_pruned": 0,
+                "mail_accounts_processed": 0,
+                "summary_updated": 0,
+                "summary_failed": 0,
+                "photo_backfill_updated": 0,
+                "photo_backfill_failed": 0,
+                "inbox_routed": 0,
+                "skipped": 0,
+                "errors": 0,
+            },
+        )
+        reg.commit()
+
+        assert updated == 4
+        assert pruned == 0
+        assert accounts_processed == 1
+
+        doc_row = reg.execute(
+            """
+            SELECT filepath, source, summary_text, provenance_json
+            FROM docs_registry
+            WHERE source = 'inbox-vault/mail-attachment'
+            """
+        ).fetchone()
+        photo_row = reg.execute(
+            """
+            SELECT filepath, source, caption, ocr_text, provenance_json
+            FROM photos_registry
+            WHERE source = 'inbox-vault/mail-attachment'
+            """
+        ).fetchone()
+        bridge_rows = reg.execute(
+            """
+            SELECT target_kind, registry_table, ingest_status
+            FROM mail_attachment_bridge
+            ORDER BY part_id
+            """
+        ).fetchall()
+    finally:
+        reg.close()
+
+    assert doc_row is not None
+    assert str(doc_row[0]).startswith("mail-attachment://doc/")
+    assert doc_row[1] == "inbox-vault/mail-attachment"
+    assert doc_row[2] == "Invoice attachment summary with due date."
+    doc_provenance = json.loads(doc_row[3] or "{}")
+    assert doc_provenance["origin_kind"] == "mail_attachment"
+    assert doc_provenance["filename"] == "invoice-note.txt"
+
+    assert photo_row is not None
+    assert str(photo_row[0]).startswith("mail-attachment://photo/")
+    assert photo_row[1] == "inbox-vault/mail-attachment"
+    assert photo_row[2] == "Expense receipt attachment"
+    assert photo_row[3] == "Total $42.00"
+    photo_provenance = json.loads(photo_row[4] or "{}")
+    assert photo_provenance["origin_kind"] == "mail_attachment"
+    assert photo_provenance["filename"] == "receipt.png"
+
+    assert [tuple(row) for row in bridge_rows] == [
+        ("doc", "docs_registry", "indexed"),
+        ("photo", "photos_registry", "indexed"),
+    ]
+
+    rc = update_index(
+        registry_db,
+        vector_db,
+        embedding_client=StubEmbeddingClient(dim=8),
+        source_selection="all",
+        mail_bridge_enabled=True,
+        rebuild=True,
+        redaction_cfg=RedactionConfig(mode="regex", enabled=True),
+    )
+    assert rc == 0
+    _ = capsys.readouterr()
+
+    rc = query_index(
+        registry_db,
+        vector_db,
+        "invoice attachment",
+        top_k=5,
+        embedding_client=StubEmbeddingClient(dim=8),
+        source_selection="docs",
+        mail_bridge_enabled=True,
+        clearance="redacted",
+        search_level="auto",
+        as_json=True,
+    )
+    assert rc == 0
+    docs_payload = json.loads(capsys.readouterr().out)
+    assert any(
+        result["source_kind"] == "docs" and result["metadata"].get("origin_kind") == "mail_attachment"
+        for result in docs_payload["results"]
+    )
+
+    rc = query_index(
+        registry_db,
+        vector_db,
+        "expense receipt",
+        top_k=5,
+        embedding_client=StubEmbeddingClient(dim=8),
+        source_selection="photos",
+        mail_bridge_enabled=True,
+        clearance="redacted",
+        search_level="auto",
+        as_json=True,
+    )
+    assert rc == 0
+    photos_payload = json.loads(capsys.readouterr().out)
+    assert any(
+        result["source_kind"] == "photos" and result["metadata"].get("origin_kind") == "mail_attachment"
+        for result in photos_payload["results"]
+    )
+
+
+def test_mail_bridge_leaves_unmaterialized_attachment_as_bridge_metadata_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+
+    conn = sqlite3.connect(str(inbox_db))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE message_attachments (
+              msg_id TEXT NOT NULL,
+              account_email TEXT NOT NULL,
+              attachment_key TEXT NOT NULL DEFAULT '',
+              part_id TEXT NOT NULL,
+              gmail_attachment_id TEXT NOT NULL DEFAULT '',
+              mime_type TEXT NOT NULL DEFAULT '',
+              filename TEXT NOT NULL DEFAULT '',
+              size_bytes INTEGER,
+              content_disposition TEXT NOT NULL DEFAULT '',
+              content_id TEXT NOT NULL DEFAULT '',
+              is_inline INTEGER NOT NULL DEFAULT 0,
+              inventory_state TEXT NOT NULL DEFAULT 'metadata_only',
+              storage_kind TEXT NOT NULL DEFAULT '',
+              storage_path TEXT NOT NULL DEFAULT '',
+              content_sha256 TEXT NOT NULL DEFAULT '',
+              content_size_bytes INTEGER NOT NULL DEFAULT 0,
+              materialized_at TEXT NOT NULL DEFAULT '',
+              last_seen_at TEXT NOT NULL,
+              PRIMARY KEY (msg_id, part_id)
+            );
+
+            CREATE TABLE message_attachment_inventory_state (
+              msg_id TEXT PRIMARY KEY,
+              account_email TEXT NOT NULL,
+              inventory_state TEXT NOT NULL DEFAULT 'metadata_only',
+              attachment_count INTEGER NOT NULL DEFAULT 0,
+              inventoried_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO message_attachments (
+              msg_id, account_email, attachment_key, part_id, gmail_attachment_id, mime_type,
+              filename, size_bytes, content_disposition, content_id, is_inline, inventory_state,
+              storage_kind, storage_path, content_sha256, content_size_bytes, materialized_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "msg-a-2",
+                "acct-a@example.com",
+                "att-pdf-remote",
+                "2",
+                "gmail-att-2",
+                "application/pdf",
+                "invoice.pdf",
+                2048,
+                "attachment",
+                "",
+                0,
+                "metadata_only",
+                "",
+                "",
+                "",
+                0,
+                "",
+                "2026-03-21T10:35:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO message_attachment_inventory_state (
+              msg_id, account_email, inventory_state, attachment_count, inventoried_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "msg-a-2",
+                "acct-a@example.com",
+                "metadata_only",
+                1,
+                "2026-03-21T10:35:00+00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        updated, pruned, accounts_processed = sync_mail_bridge(
+            reg,
+            mail_cfg=_mail_cfg(inbox_db, include_accounts=("acct-a@example.com",)),
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            text_cap=40000,
+            pdf_cfg=PdfParseConfig(
+                enabled=False,
+                parse_url="",
+                timeout_seconds=60,
+                profile="auto",
+            ),
+            summary_cfg=SummaryConfig(
+                enabled=True,
+                base_url="http://127.0.0.1:8080/v1",
+                model="test-summary-model",
+                api_key="",
+                timeout_seconds=30,
+                max_input_chars=12000,
+                max_output_chars=650,
+            ),
+            chat_client=_FakeChatClient(),
+            photo_client=_FakePhotoClient(),
+            verbose=False,
+        )
+        reg.commit()
+
+        docs_rows = reg.execute(
+            "SELECT COUNT(*) FROM docs_registry WHERE source = 'inbox-vault/mail-attachment'"
+        ).fetchone()[0]
+        bridge_row = reg.execute(
+            """
+            SELECT attachment_key, ingest_status, ingest_error
+            FROM mail_attachment_bridge
+            WHERE attachment_key = 'att-pdf-remote'
+            """
+        ).fetchone()
+    finally:
+        reg.close()
+
+    assert updated == 3
+    assert pruned == 0
+    assert accounts_processed == 1
+    assert docs_rows == 0
+    assert bridge_row is not None
+    assert bridge_row[1] in {"unmaterialized", "missing-raw-message"}
 
 
 def test_mail_body_chunk_cap_limits_long_messages_and_reindexes_on_cap_change(

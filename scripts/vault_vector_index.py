@@ -340,6 +340,7 @@ def state_hash_doc(
         "summary_hash": row["summary_hash"] or "",
         "dates_json": row["dates_json"] or "",
         "primary_date": row["primary_date"] or "",
+        "provenance_json": row["provenance_json"] or "",
         "redaction_mode": redaction_mode,
         "redaction_policy_version": REDACTION_POLICY_VERSION,
         "redaction_output_signature": redaction_output_signature,
@@ -372,6 +373,7 @@ def state_hash_photo(
         "ocr_source": row["ocr_source"] or "",
         "dates_json": row["dates_json"] or "",
         "primary_date": row["primary_date"] or "",
+        "provenance_json": row["provenance_json"] or "",
         "redaction_mode": redaction_mode,
         "redaction_policy_version": REDACTION_POLICY_VERSION,
         "redaction_output_signature": redaction_output_signature,
@@ -433,6 +435,17 @@ def _parse_dates_json(raw: str | None) -> list[dict[str, Any]]:
     except json.JSONDecodeError:
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _parse_provenance_json(raw: str | None) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _stable_source_id(source_table: str, source_filepath: str) -> str:
@@ -503,6 +516,7 @@ def build_doc_items(row: sqlite3.Row) -> list[Item]:
     body_text = (row["text_content"] or "").strip()
     primary_date = str(row["primary_date"] or "").strip()
     dates = _parse_dates_json(row["dates_json"])
+    provenance = _parse_provenance_json(row["provenance_json"])
     if not summary_text:
         return []
 
@@ -531,6 +545,7 @@ def build_doc_items(row: sqlite3.Row) -> list[Item]:
                 "summary_model": row["summary_model"] or "",
                 "primary_date": primary_date,
                 "dates": dates,
+                "origin_kind": str(provenance.get("origin_kind") or "").strip(),
             },
         )
     )
@@ -558,6 +573,7 @@ def build_doc_items(row: sqlite3.Row) -> list[Item]:
                     "summary_model": row["summary_model"] or "",
                     "primary_date": primary_date,
                     "dates": dates,
+                    "origin_kind": str(provenance.get("origin_kind") or "").strip(),
                 },
             )
         )
@@ -584,6 +600,7 @@ def build_photo_items(row: sqlite3.Row) -> list[Item]:
     date_taken = row["date_taken"] or ""
     primary_date = str(row["primary_date"] or "").strip()
     dates = _parse_dates_json(row["dates_json"])
+    provenance = _parse_provenance_json(row["provenance_json"])
     source = row["source"] or ""
 
     base_metadata = {
@@ -601,6 +618,7 @@ def build_photo_items(row: sqlite3.Row) -> list[Item]:
         "ocr_source": ocr_source,
         "primary_date": primary_date,
         "dates": dates,
+        "origin_kind": str(provenance.get("origin_kind") or "").strip(),
     }
 
     channel_specs: list[tuple[str, str]] = []
@@ -1443,7 +1461,7 @@ def iter_docs(reg_conn: sqlite3.Connection, *, updated_since: str | None = None)
     sql = """
         SELECT filepath, checksum, source, text_content, parser, size, mtime, updated_at,
                summary_text, summary_model, summary_hash, summary_status, summary_updated_at,
-               dates_json, primary_date
+               dates_json, primary_date, provenance_json
         FROM docs_registry
     """
     params: list[str] = []
@@ -1459,7 +1477,7 @@ def iter_photos(reg_conn: sqlite3.Connection, *, updated_since: str | None = Non
         SELECT filepath, checksum, source, date_taken, size, mtime, updated_at, notes,
                category_primary, category_secondary, taxonomy, caption, analyzer_status,
                ocr_text, ocr_status, ocr_source, ocr_updated_at,
-               dates_json, primary_date
+               dates_json, primary_date, provenance_json
         FROM photos_registry
     """
     params: list[str] = []
@@ -1648,6 +1666,7 @@ def ensure_registry_vector_columns(reg_conn: sqlite3.Connection) -> None:
             ("summary_updated_at", "TEXT"),
             ("dates_json", "TEXT"),
             ("primary_date", "TEXT"),
+            ("provenance_json", "TEXT"),
         ]:
             _ensure_registry_column(reg_conn, "docs_registry", column, column_type)
     if _table_exists(reg_conn, "photos_registry"):
@@ -1664,6 +1683,7 @@ def ensure_registry_vector_columns(reg_conn: sqlite3.Connection) -> None:
             ("ocr_updated_at", "TEXT"),
             ("dates_json", "TEXT"),
             ("primary_date", "TEXT"),
+            ("provenance_json", "TEXT"),
         ]:
             _ensure_registry_column(reg_conn, "photos_registry", column, column_type)
     if _table_exists(reg_conn, "mail_registry"):
