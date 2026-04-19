@@ -26,10 +26,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from xml.etree import ElementTree as ET
 
 from vault_db import SQLCIPHER_AVAILABLE, connect_vault_db, resolve_db_password
 from vault_service_defaults import (
@@ -105,6 +107,22 @@ DOC_IMAGE_HINT_PHRASES = {
     "bank statement",
     "tax return",
     "medical record",
+}
+
+JUNK_ATTACHMENT_FILENAME_TOKENS = {
+    "attachment",
+    "avatar",
+    "blank",
+    "favicon",
+    "icon",
+    "image",
+    "img",
+    "logo",
+    "noname",
+    "photo",
+    "pixel",
+    "spacer",
+    "unnamed",
 }
 
 MONTH_NAME_TO_NUM = {
@@ -1764,21 +1782,45 @@ def _fetch_attachment_inventory_messages(
     account_email: str,
     cursor: tuple[str, str] | None = None,
 ) -> list[tuple[str, str, str]]:
-    sql = """
-        SELECT msg_id, account_email, inventoried_at
-        FROM message_attachment_inventory_state
-        WHERE account_email = ?
+    has_materialized_at = _table_has_column(inbox_conn, "message_attachments", "materialized_at")
+    attachment_updated_sql = (
+        "MAX(CASE "
+        "WHEN COALESCE(materialized_at, '') > COALESCE(last_seen_at, '') THEN COALESCE(materialized_at, '') "
+        "ELSE COALESCE(last_seen_at, '') "
+        "END)"
+        if has_materialized_at
+        else "MAX(COALESCE(last_seen_at, ''))"
+    )
+    sql = f"""
+        SELECT
+          s.msg_id,
+          s.account_email,
+          CASE
+            WHEN COALESCE(a.attachment_updated_at, '') > COALESCE(s.inventoried_at, '') THEN COALESCE(a.attachment_updated_at, '')
+            ELSE COALESCE(s.inventoried_at, '')
+          END AS effective_updated_at
+        FROM message_attachment_inventory_state s
+        LEFT JOIN (
+          SELECT
+            msg_id,
+            account_email,
+            {attachment_updated_sql} AS attachment_updated_at
+          FROM message_attachments
+          GROUP BY msg_id, account_email
+        ) a
+          ON a.msg_id = s.msg_id AND a.account_email = s.account_email
+        WHERE s.account_email = ?
     """
     params: list[Any] = [account_email]
     if cursor is not None:
         sql += """
           AND (
-            inventoried_at > ?
-            OR (inventoried_at = ? AND msg_id > ?)
+            effective_updated_at > ?
+            OR (effective_updated_at = ? AND s.msg_id > ?)
           )
         """
         params.extend([cursor[0], cursor[0], cursor[1]])
-    sql += " ORDER BY inventoried_at, msg_id"
+    sql += " ORDER BY effective_updated_at, s.msg_id"
     rows = inbox_conn.execute(sql, params).fetchall()
     return [
         (str(row[0] or ""), str(row[1] or ""), str(row[2] or ""))
@@ -1954,14 +1996,23 @@ def _materialized_attachment_path_from_storage(
 ) -> tuple[Path | None, str, str]:
     storage_kind = str(record.storage_kind or "").strip().lower()
     storage_path = str(record.storage_path or "").strip()
+    materialized_at = str(record.materialized_at or "").strip()
+    content_sha256 = str(record.content_sha256 or "").strip().lower()
+    content_size_bytes = max(0, int(record.content_size_bytes or 0))
+    has_materialized_metadata = bool(materialized_at or storage_path or content_sha256 or content_size_bytes > 0)
     if not storage_kind:
+        if has_materialized_metadata:
+            return None, "materialized-metadata-incomplete", "attachment row has materialized metadata but no storage_kind"
         return None, "unmaterialized", "attachment row has no storage_kind"
     if storage_kind != "file":
         return None, "unsupported-storage-kind", f"unsupported storage_kind: {storage_kind}"
     if not storage_path:
+        if has_materialized_metadata:
+            return None, "materialized-metadata-incomplete", "attachment row has storage_kind=file but no storage_path"
         return None, "missing-storage-path", "attachment row has storage_kind=file but no storage_path"
     base_dir = Path(str(bridge_db_path or "")).expanduser().resolve().parent
-    path = (base_dir / storage_path).resolve()
+    raw_path = Path(storage_path).expanduser()
+    path = raw_path.resolve() if raw_path.is_absolute() else (base_dir / raw_path).resolve()
     try:
         path.relative_to(base_dir)
     except ValueError:
@@ -1985,13 +2036,82 @@ def _materialize_mail_attachment(
     if materialized_path is not None:
         return materialized_path, status, error
     # Backward-compatible fallback for inline bytes persisted in raw_messages.
-    if status in {"unmaterialized", "missing-storage-path"}:
+    if status in {"unmaterialized", "missing-storage-path", "materialized-metadata-incomplete"}:
         return _materialize_attachment_from_raw_message(
             inbox_conn,
             cache_root=cache_root,
             record=record,
         )
     return None, status, error
+
+
+def _mail_attachment_effective_size_bytes(record: MailAttachmentRecord) -> int:
+    content_size = max(0, int(record.content_size_bytes or 0))
+    if content_size > 0:
+        return content_size
+    return max(0, int(record.size_bytes or 0))
+
+
+def _mail_attachment_image_dimensions(path: Path | None) -> tuple[int, int] | None:
+    if path is None or Image is None:
+        return None
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:
+        return None
+    if int(width) <= 0 or int(height) <= 0:
+        return None
+    return int(width), int(height)
+
+
+def _looks_like_junk_mail_attachment_filename(filename: str) -> bool:
+    raw = str(filename or "").strip()
+    if not raw:
+        return True
+    stem = Path(raw).stem.strip().lower()
+    if not stem:
+        return True
+    normalized = re.sub(r"[^a-z0-9]+", " ", stem)
+    tokens = [token for token in normalized.split() if token]
+    if not tokens:
+        return True
+    token_set = set(tokens)
+    if token_set <= JUNK_ATTACHMENT_FILENAME_TOKENS:
+        return True
+    if stem in {"noname", "image", "logo", "icon", "img"}:
+        return True
+    if token_set & {"logo", "icon", "favicon", "spacer"}:
+        return True
+    return False
+
+
+def _should_skip_mail_attachment(
+    record: MailAttachmentRecord,
+    materialized_path: Path | None = None,
+) -> tuple[bool, str]:
+    mime = str(record.mime_type or "").strip().lower()
+    if not mime.startswith("image/"):
+        return False, ""
+
+    size_bytes = _mail_attachment_effective_size_bytes(record)
+    if size_bytes <= 0 or size_bytes > 4096:
+        return False, ""
+
+    reasons: list[str] = [f"size_bytes={size_bytes}"]
+    if _looks_like_junk_mail_attachment_filename(record.filename):
+        reasons.append("generic_filename")
+
+    dims = _mail_attachment_image_dimensions(materialized_path)
+    if dims is not None:
+        width, height = dims
+        reasons.append(f"dimensions={width}x{height}")
+        if max(width, height) > 64 and "generic_filename" not in reasons:
+            return False, ""
+    elif "generic_filename" not in reasons:
+        return False, ""
+
+    return True, ", ".join(reasons)
 
 
 def _supported_attachment_kind(
@@ -2339,11 +2459,25 @@ def sync_mail_attachments_bridge(
                                 ingest_error = f"unsupported attachment type: mime={record.mime_type} ext={materialized_path.suffix.lower()}"
 
                         if materialized_path is not None and target_kind in {"doc", "photo"}:
-                            provenance_json = _mail_attachment_provenance_json(record)
-                            if budget is not None and not budget.consume():
+                            skip_attachment, skip_reason = _should_skip_mail_attachment(
+                                record,
+                                materialized_path=materialized_path,
+                            )
+                            if skip_attachment:
+                                ingest_status = "skipped-junk-image"
+                                ingest_error = skip_reason
+                                _delete_attachment_registry_row(
+                                    conn,
+                                    registry_table=registry_table,
+                                    registry_filepath=registry_filepath,
+                                )
+                                registry_table = ""
+                                registry_filepath = ""
+                            elif budget is not None and not budget.consume():
                                 interrupted = True
                                 break
-                            if not dry_run:
+                            elif not dry_run:
+                                provenance_json = _mail_attachment_provenance_json(record)
                                 if target_kind == "doc":
                                     result = index_doc_file(
                                         conn,
@@ -2972,6 +3106,49 @@ def _is_sparse_pdf_text(text: str) -> bool:
     return alnum < 70
 
 
+def _normalize_docx_text(text: str) -> str:
+    normalized = str(text or "").replace("\xa0", " ")
+    normalized = re.sub(r"[ \t]+\n", "\n", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
+def _extract_docx_text(path: Path) -> tuple[str, str, int, bool]:
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            xml_bytes = archive.read("word/document.xml")
+    except FileNotFoundError as exc:
+        raise RuntimeError("DOCX missing word/document.xml") from exc
+    except KeyError as exc:
+        raise RuntimeError("DOCX missing word/document.xml") from exc
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError("DOCX is not a valid zip archive") from exc
+
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError as exc:
+        raise RuntimeError("DOCX document.xml is not valid XML") from exc
+
+    paragraphs: list[str] = []
+    for para in root.findall(".//w:p", namespace):
+        parts: list[str] = []
+        for node in para.iter():
+            tag = node.tag.rsplit("}", 1)[-1]
+            if tag == "t":
+                parts.append(str(node.text or ""))
+            elif tag == "tab":
+                parts.append("\t")
+            elif tag in {"br", "cr"}:
+                parts.append("\n")
+        text = _normalize_docx_text("".join(parts))
+        if text:
+            paragraphs.append(text)
+
+    combined = _normalize_docx_text("\n\n".join(paragraphs))
+    return combined, "docx-xml", len(combined), False
+
+
 def extract_doc_text(path: Path, pdf_cfg: PdfParseConfig) -> tuple[str, str, int, bool]:
     """Return text, parser, text_chars_total, ocr_used.
 
@@ -3030,7 +3207,10 @@ def extract_doc_text(path: Path, pdf_cfg: PdfParseConfig) -> tuple[str, str, int
         text = path.read_text(encoding="utf-8", errors="replace")
         return text, "plain", len(text), False
 
-    # Minimal fallback for office docs in this first version.
+    if ext == ".docx":
+        return _extract_docx_text(path)
+
+    # Minimal fallback for legacy office docs and other binaries in this first version.
     return "", "unsupported-doc-binary", 0, False
 
 
@@ -3952,49 +4132,58 @@ def backfill_missing_photo_analysis(
     deadline: float,
     verbose: bool,
     budget: WorkBudget | None = None,
+    source_selection: str = "all",
 ) -> tuple[int, int]:
     if limit == 0 or photo_client is None or not photo_client.cfg.enabled:
         return 0, 0
 
+    source_sql, source_params = _photo_backfill_source_clause(source_selection)
     if limit < 0:
         rows = conn.execute(
-            """
+            f"""
             SELECT filepath, source
             FROM photos_registry
-            WHERE COALESCE(TRIM(category_primary), '') = ''
-               OR COALESCE(TRIM(taxonomy), '') = ''
-               OR COALESCE(TRIM(caption), '') = ''
-               OR (
+            WHERE (
+                   COALESCE(TRIM(category_primary), '') = ''
+                OR COALESCE(TRIM(taxonomy), '') = ''
+                OR COALESCE(TRIM(caption), '') = ''
+                OR (
                     (
                       LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
                       OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
                     )
                     AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
                   )
-               OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+                OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+            )
+              {source_sql}
             ORDER BY updated_at DESC
-            """
+            """,
+            source_params,
         ).fetchall()
     else:
         rows = conn.execute(
-            """
+            f"""
             SELECT filepath, source
             FROM photos_registry
-            WHERE COALESCE(TRIM(category_primary), '') = ''
-               OR COALESCE(TRIM(taxonomy), '') = ''
-               OR COALESCE(TRIM(caption), '') = ''
-               OR (
+            WHERE (
+                   COALESCE(TRIM(category_primary), '') = ''
+                OR COALESCE(TRIM(taxonomy), '') = ''
+                OR COALESCE(TRIM(caption), '') = ''
+                OR (
                     (
                       LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
                       OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
                     )
                     AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
                   )
-               OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+                OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+            )
+              {source_sql}
             ORDER BY updated_at DESC
             LIMIT ?
             """,
-            (int(limit),),
+            (*source_params, int(limit)),
         ).fetchall()
 
     updated = 0
@@ -4018,11 +4207,15 @@ def backfill_missing_photo_analysis(
         if budget is not None and not budget.consume():
             break
         action = "checked"
+        registry_key = str(filepath or "")
         try:
-            p = Path(str(filepath))
-            if not p.exists() or not p.is_file():
+            p, resolve_status = _resolve_photo_registry_input_path(
+                conn,
+                registry_filepath=registry_key,
+            )
+            if p is None:
                 failed += 1
-                action = "missing-file"
+                action = resolve_status
                 continue
             changed = index_photo_file(
                 conn,
@@ -4031,6 +4224,7 @@ def backfill_missing_photo_analysis(
                 dry_run=False,
                 photo_client=photo_client,
                 force_analyze=True,
+                registry_filepath=registry_key,
             )
             if changed:
                 conn.commit()
@@ -4038,7 +4232,7 @@ def backfill_missing_photo_analysis(
                 action = "updated"
             row = conn.execute(
                 "SELECT COALESCE(TRIM(analyzer_status), '') FROM photos_registry WHERE filepath = ?",
-                (str(p),),
+                (registry_key,),
             ).fetchone()
             st = (row[0] if row else "")
             if st == "error":
@@ -4058,6 +4252,63 @@ def backfill_missing_photo_analysis(
         )
 
     return updated, failed
+
+
+def _resolve_photo_registry_input_path(
+    conn: sqlite3.Connection,
+    *,
+    registry_filepath: str | Path,
+) -> tuple[Path | None, str]:
+    registry_key = str(registry_filepath or "").strip()
+    if not registry_key:
+        return None, "missing-filepath"
+
+    if registry_key.startswith("mail-attachment://photo/"):
+        row = conn.execute(
+            """
+            SELECT materialized_input_path, attachment_ref
+            FROM mail_attachment_bridge
+            WHERE registry_table = 'photos_registry' AND registry_filepath = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (registry_key,),
+        ).fetchone()
+        if row is None:
+            attachment_ref = registry_key.rsplit("/", 1)[-1].strip()
+            row = conn.execute(
+                """
+                SELECT materialized_input_path, attachment_ref
+                FROM mail_attachment_bridge
+                WHERE attachment_ref = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (attachment_ref,),
+            ).fetchone()
+        if row is None:
+            return None, "missing-mail-attachment-bridge"
+        materialized_input_path = str(row[0] or "").strip()
+        if not materialized_input_path:
+            return None, "missing-materialized-input-path"
+        path = Path(materialized_input_path)
+        if not path.exists() or not path.is_file():
+            return None, "missing-materialized-file"
+        return path, "ok"
+
+    path = Path(registry_key)
+    if not path.exists() or not path.is_file():
+        return None, "missing-file"
+    return path, "ok"
+
+
+def _photo_backfill_source_clause(source_selection: str) -> tuple[str, tuple[Any, ...]]:
+    selected = str(source_selection or "all").strip().lower()
+    if selected == "mail":
+        return "AND COALESCE(source, '') = ?", (MAIL_ATTACHMENT_SOURCE,)
+    if selected == "photos":
+        return "AND COALESCE(source, '') != ?", (MAIL_ATTACHMENT_SOURCE,)
+    return "", ()
 
 
 def count_pending_summary_backfill(conn: sqlite3.Connection, limit: int) -> int:
@@ -4082,26 +4333,31 @@ def count_pending_summary_backfill(conn: sqlite3.Connection, limit: int) -> int:
     return min(total, int(limit))
 
 
-def count_pending_photo_backfill(conn: sqlite3.Connection, limit: int) -> int:
+def count_pending_photo_backfill(conn: sqlite3.Connection, limit: int, *, source_selection: str = "all") -> int:
     if limit == 0:
         return 0
+    source_sql, source_params = _photo_backfill_source_clause(source_selection)
     total = int(
         conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM photos_registry
-            WHERE COALESCE(TRIM(category_primary), '') = ''
-               OR COALESCE(TRIM(taxonomy), '') = ''
-               OR COALESCE(TRIM(caption), '') = ''
-               OR (
+            WHERE (
+                   COALESCE(TRIM(category_primary), '') = ''
+                OR COALESCE(TRIM(taxonomy), '') = ''
+                OR COALESCE(TRIM(caption), '') = ''
+                OR (
                     (
                       LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
                       OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
                     )
                     AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
                   )
-               OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
-            """
+                OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+            )
+              {source_sql}
+            """,
+            source_params,
         ).fetchone()[0]
     )
     if limit < 0:
@@ -4219,8 +4475,12 @@ def run(cfg: Config, dry_run: bool) -> int:
         else 0
     )
     photo_backfill_total = (
-        count_pending_photo_backfill(conn, cfg.photo_reprocess_missing_limit)
-        if "photos" in selected_source_kinds
+        count_pending_photo_backfill(
+            conn,
+            cfg.photo_reprocess_missing_limit,
+            source_selection=cfg.source_selection,
+        )
+        if ({"photos", "mail"} & selected_source_kinds)
         else 0
     )
 
@@ -4621,7 +4881,7 @@ def run(cfg: Config, dry_run: bool) -> int:
         # 6) Optional controlled photo-analysis backfill for unchanged photos.
         if (
             not should_stop(deadline, budget)
-            and "photos" in selected_source_kinds
+            and ({"photos", "mail"} & selected_source_kinds)
             and not dry_run
             and cfg.photo_reprocess_missing_limit != 0
         ):
@@ -4632,6 +4892,7 @@ def run(cfg: Config, dry_run: bool) -> int:
                 deadline=deadline,
                 budget=budget,
                 verbose=cfg.verbose,
+                source_selection=cfg.source_selection,
             )
             counters["photo_backfill_updated"] += p_updated
             counters["photo_backfill_failed"] += p_failed
