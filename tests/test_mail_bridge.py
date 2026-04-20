@@ -23,6 +23,7 @@ from vault_registry_sync import (
     PhotoAnalysisConfig,
     PhotoAnalysisResult,
     SummaryConfig,
+    WorkBudget,
     backfill_missing_photo_analysis,
     count_pending_photo_backfill,
     ensure_db,
@@ -695,6 +696,70 @@ def test_sync_mail_bridge_repair_prunes_filtered_accounts_and_is_stable(
         assert repair_again == (0, 0, 1)
     finally:
         reg.close()
+
+
+def test_sync_mail_bridge_full_scan_rerun_resumes_from_mail_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        first = sync_mail_bridge(
+            reg,
+            mail_cfg=_mail_cfg(inbox_db, include_accounts=("acct-a@example.com",)),
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            budget=WorkBudget.from_max_items(1),
+            verbose=False,
+        )
+        reg.commit()
+        repaired = sync_mail_bridge(
+            reg,
+            mail_cfg=_mail_cfg(inbox_db, include_accounts=("acct-a@example.com",)),
+            full_scan=True,
+            dry_run=False,
+            deadline=float("inf"),
+            verbose=True,
+        )
+        reg.commit()
+    finally:
+        reg.close()
+
+    assert first == (1, 0, 1)
+    assert repaired == (1, 0, 1)
+
+    imported = connect_vault_db(registry_db)
+    try:
+        rows = imported.execute(
+            "SELECT msg_id FROM mail_registry WHERE account_email = ? ORDER BY msg_id",
+            ("acct-a@example.com",),
+        ).fetchall()
+        cursor_row = imported.execute(
+            """
+            SELECT last_material_updated_at, last_material_msg_id
+            FROM mail_sync_state
+            WHERE account_email = ?
+            """,
+            ("acct-a@example.com",),
+        ).fetchone()
+    finally:
+        imported.close()
+
+    assert [tuple(row) for row in rows] == [("msg-a-1",), ("msg-a-2",)]
+    assert tuple(cursor_row) == ("2026-03-21T10:30:00+00:00", "msg-a-2")
+
+    stdout = capsys.readouterr().out
+    assert "action=resume account=acct-a@example.com" in stdout
+    assert "[item=0/1]" in stdout
+    assert "action=repaired account=acct-a@example.com" in stdout
 
 
 def test_sync_mail_bridge_rolls_back_failing_account_without_advancing_its_cursor(

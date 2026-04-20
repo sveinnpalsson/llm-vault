@@ -1361,6 +1361,22 @@ def _fetch_mail_records(
     ]
 
 
+def _fetch_mail_record_ids(
+    inbox_conn: sqlite3.Connection,
+    *,
+    account_email: str,
+) -> set[str]:
+    rows = inbox_conn.execute(
+        """
+        SELECT m.msg_id
+        FROM messages m
+        WHERE m.account_email = ?
+        """,
+        (account_email,),
+    ).fetchall()
+    return {str(row[0] or "") for row in rows if str(row[0] or "")}
+
+
 def _mail_registry_snapshot(conn: sqlite3.Connection, *, filepath: str) -> tuple[str, ...] | None:
     row = conn.execute(
         """
@@ -1547,7 +1563,7 @@ def sync_mail_bridge(
             if should_stop(deadline, budget):
                 interrupted = True
                 break
-            cursor = None if full_scan else _mail_sync_cursor(
+            cursor = _mail_sync_cursor(
                 conn,
                 bridge_key=bridge_key,
                 account_email=account_email,
@@ -1559,7 +1575,10 @@ def sync_mail_bridge(
                 cursor=cursor,
             )
             if full_scan:
-                live_records[account_email] = {record.msg_id for record in records}
+                live_records[account_email] = _fetch_mail_record_ids(
+                    inbox_conn,
+                    account_email=account_email,
+                )
 
             accounts_processed += 1
             max_cursor = ("", "")
@@ -1567,11 +1586,17 @@ def sync_mail_bridge(
             account_skipped = 0
             skip_batch = 0
             skip_stage_done = 0
+            start_action = f"start account={account_email}"
+            if cursor != ("", ""):
+                start_action = (
+                    f"resume account={account_email} "
+                    f"cursor={cursor[0]}::{cursor[1]}"
+                )
             mail_last_emit_mono = emit_registry_repair_progress(
                 stage="4/6.mail-sync.mail",
                 stage_done=0,
                 stage_total=account_total,
-                action=f"start account={account_email}",
+                action=start_action,
                 started_mono=mail_started_mono,
                 last_emit_mono=mail_last_emit_mono,
                 verbose=verbose,
@@ -1759,15 +1784,7 @@ def sync_mail_bridge(
                         repaired=updated,
                         skipped=account_skipped,
                     )
-                if full_scan:
-                    _store_mail_sync_cursor(
-                        conn,
-                        bridge_key=bridge_key,
-                        account_email=account_email,
-                        last_material_updated_at=max_cursor[0],
-                        last_material_msg_id=max_cursor[1],
-                    )
-                elif max_cursor != ("", ""):
+                if max_cursor != ("", ""):
                     _store_mail_sync_cursor(
                         conn,
                         bridge_key=bridge_key,
