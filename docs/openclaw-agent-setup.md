@@ -118,6 +118,8 @@ vault-ops update --source mail
 vault-ops search "budget approval" --source mail --json
 ```
 
+If `[mail_bridge].import_attachments = true`, that mail update can also create mail-derived docs/photos rows for supported attachments. The update stays mail-only at registry sync time, then widens the vector refresh step so those attachment-backed docs/photos are indexed in the same run.
+
 ## Step 4: Validate The Agent-Safe CLI Path
 
 ```bash

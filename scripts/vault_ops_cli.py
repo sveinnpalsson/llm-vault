@@ -373,7 +373,11 @@ def _append_registry_sync_flags(cmd: list[str], args: argparse.Namespace) -> Non
 
 def _resolve_vector_update_source_mode(args: argparse.Namespace) -> str:
     source_mode = _resolve_source_mode(args)
-    if source_mode == "mail" and getattr(args, "_mail_bridge_enabled", False):
+    if (
+        source_mode == "mail"
+        and getattr(args, "_mail_bridge_enabled", False)
+        and getattr(args, "_mail_bridge_import_attachments", True)
+    ):
         # Mail bridge runs can also create mail-derived docs/photos attachment rows.
         # Vector update should pick those up without widening registry sync itself.
         return "all"

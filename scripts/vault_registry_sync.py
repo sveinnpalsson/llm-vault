@@ -60,6 +60,7 @@ DEFAULT_PDF_PARSE_TIMEOUT_SECONDS = 600
 DEFAULT_PDF_PARSE_PROFILE = "auto"
 ROOT = Path(__file__).resolve().parents[1]
 PROGRESS_HEARTBEAT_SECONDS = 5.0
+MAIL_CURSOR_CHECKPOINT_ROWS = 100
 MAIL_BRIDGE_SOURCE = "inbox-vault"
 MAIL_ATTACHMENT_SOURCE = "inbox-vault/mail-attachment"
 DEFAULT_MAIL_BRIDGE_PASSWORD_ENV = "INBOX_VAULT_DB_PASSWORD"
@@ -1273,6 +1274,28 @@ def _store_mail_sync_cursor(
     return True
 
 
+def _checkpoint_mail_sync_cursor(
+    conn: sqlite3.Connection,
+    *,
+    bridge_key: str,
+    account_email: str,
+    cursor: tuple[str, str],
+    processed_since_checkpoint: int,
+) -> int:
+    if cursor == ("", "") or processed_since_checkpoint < MAIL_CURSOR_CHECKPOINT_ROWS:
+        return processed_since_checkpoint
+    _store_mail_sync_cursor(
+        conn,
+        bridge_key=bridge_key,
+        account_email=account_email,
+        last_material_updated_at=cursor[0],
+        last_material_msg_id=cursor[1],
+    )
+    conn.commit()
+    conn.execute("BEGIN")
+    return 0
+
+
 def _material_updated_at_sql(*, import_summary: bool) -> str:
     if not import_summary:
         return "COALESCE(m.last_seen_at, '')"
@@ -1706,6 +1729,7 @@ def sync_mail_bridge(
 
             try:
                 conn.execute("BEGIN")
+                processed_since_checkpoint = 0
                 for idx, record in enumerate(records, start=1):
                     if should_stop(deadline, budget):
                         interrupted = True
@@ -1731,6 +1755,8 @@ def sync_mail_bridge(
                         dates_json,
                     )
                     if _mail_registry_snapshot(conn, filepath=filepath) == new_snapshot:
+                        max_cursor = (record.material_updated_at, record.msg_id)
+                        processed_since_checkpoint += 1
                         account_skipped += 1
                         skip_batch += 1
                         skip_stage_done = idx
@@ -1747,6 +1773,13 @@ def sync_mail_bridge(
                                 skipped=account_skipped,
                             )
                             skip_batch = 0
+                        processed_since_checkpoint = _checkpoint_mail_sync_cursor(
+                            conn,
+                            bridge_key=bridge_key,
+                            account_email=account_email,
+                            cursor=max_cursor,
+                            processed_since_checkpoint=processed_since_checkpoint,
+                        )
                         continue
                     if budget is not None and not budget.consume():
                         interrupted = True
@@ -1773,6 +1806,7 @@ def sync_mail_bridge(
                     )
                     updated += 1
                     max_cursor = (record.material_updated_at, record.msg_id)
+                    processed_since_checkpoint += 1
                     mail_last_emit_mono = emit_registry_repair_progress(
                         stage="4/6.mail-sync.mail",
                         stage_done=idx,
@@ -1783,6 +1817,13 @@ def sync_mail_bridge(
                         verbose=verbose,
                         repaired=updated,
                         skipped=account_skipped,
+                    )
+                    processed_since_checkpoint = _checkpoint_mail_sync_cursor(
+                        conn,
+                        bridge_key=bridge_key,
+                        account_email=account_email,
+                        cursor=max_cursor,
+                        processed_since_checkpoint=processed_since_checkpoint,
                     )
                 if max_cursor != ("", ""):
                     _store_mail_sync_cursor(

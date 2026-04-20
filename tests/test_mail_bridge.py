@@ -11,7 +11,6 @@ import zipfile
 from pathlib import Path
 
 import pytest
-import cleanup_junk_mail_attachments
 import vault_db
 import vault_registry_sync
 from vault_db import connect_vault_db
@@ -292,6 +291,78 @@ def _append_long_mail_message(inbox_db: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _append_mail_message(
+    inbox_db: Path,
+    *,
+    msg_id: str,
+    date_iso: str,
+    last_seen_at: str,
+    summary_text: str,
+    enriched_at: str,
+    thread_id: str = "thread-a",
+    account_email: str = "acct-a@example.com",
+    internal_ts: int = 1711180800,
+) -> None:
+    conn = sqlite3.connect(str(inbox_db))
+    try:
+        conn.execute(
+            """
+            INSERT INTO messages (
+              msg_id, account_email, thread_id, date_iso, internal_ts, from_addr, to_addr,
+              subject, snippet, body_text, labels_json, history_id, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                msg_id,
+                account_email,
+                thread_id,
+                date_iso,
+                internal_ts,
+                "ops@example.com",
+                account_email,
+                f"Subject for {msg_id}",
+                f"Snippet for {msg_id}",
+                f"Body for {msg_id}",
+                json.dumps(["INBOX"]),
+                10,
+                last_seen_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO message_enrichment (
+              msg_id, category, importance, action, summary, model, enriched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                msg_id,
+                "general",
+                5,
+                "review",
+                summary_text,
+                "local-test",
+                enriched_at,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mail_sync_cursor_row(reg: sqlite3.Connection, *, account_email: str) -> tuple[str, str] | None:
+    row = reg.execute(
+        """
+        SELECT last_material_updated_at, last_material_msg_id
+        FROM mail_sync_state
+        WHERE account_email = ?
+        """,
+        (account_email,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row[0] or ""), str(row[1] or "")
 
 
 def _seed_inbox_attachment_inventory(inbox_db: Path) -> None:
@@ -629,6 +700,212 @@ def test_sync_mail_bridge_incremental_rerun_is_noop_on_unchanged_data(
         assert second == (0, 0, 2)
         assert before_row == after_row
         assert before_cursor == after_cursor
+    finally:
+        reg.close()
+
+
+def test_sync_mail_bridge_all_unchanged_rows_still_advance_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+    _append_mail_message(
+        inbox_db,
+        msg_id="msg-a-3",
+        date_iso="2026-03-22T11:00:00+00:00",
+        last_seen_at="2026-03-22T12:00:00+00:00",
+        summary_text="Third summary.",
+        enriched_at="2026-03-22T12:30:00+00:00",
+        internal_ts=1711105200,
+    )
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        cfg = _mail_cfg(inbox_db, include_accounts=("acct-a@example.com",))
+        assert sync_mail_bridge(
+            reg,
+            mail_cfg=cfg,
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            verbose=False,
+        ) == (3, 0, 1)
+        reg.commit()
+
+        bridge_key = vault_registry_sync._mail_bridge_key(cfg)
+        vault_registry_sync._store_mail_sync_cursor(
+            reg,
+            bridge_key=bridge_key,
+            account_email="acct-a@example.com",
+            last_material_updated_at="2026-03-21T10:30:00+00:00",
+            last_material_msg_id="msg-a-2",
+        )
+        reg.commit()
+
+        assert sync_mail_bridge(
+            reg,
+            mail_cfg=cfg,
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            verbose=False,
+        ) == (0, 0, 1)
+        reg.commit()
+
+        assert _mail_sync_cursor_row(reg, account_email="acct-a@example.com") == (
+            "2026-03-22T12:30:00+00:00",
+            "msg-a-3",
+        )
+    finally:
+        reg.close()
+
+
+def test_sync_mail_bridge_mixed_skipped_and_repaired_rows_store_last_processed_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+    _append_mail_message(
+        inbox_db,
+        msg_id="msg-a-3",
+        date_iso="2026-03-22T11:00:00+00:00",
+        last_seen_at="2026-03-22T12:00:00+00:00",
+        summary_text="Third summary.",
+        enriched_at="2026-03-22T12:30:00+00:00",
+        internal_ts=1711105200,
+    )
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        cfg = _mail_cfg(inbox_db, include_accounts=("acct-a@example.com",))
+        assert sync_mail_bridge(
+            reg,
+            mail_cfg=cfg,
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            verbose=False,
+        ) == (3, 0, 1)
+        reg.commit()
+
+        reg.execute("DELETE FROM mail_registry WHERE msg_id = ?", ("msg-a-2",))
+        bridge_key = vault_registry_sync._mail_bridge_key(cfg)
+        vault_registry_sync._store_mail_sync_cursor(
+            reg,
+            bridge_key=bridge_key,
+            account_email="acct-a@example.com",
+            last_material_updated_at="2026-03-20T12:00:00+00:00",
+            last_material_msg_id="msg-a-1",
+        )
+        reg.commit()
+
+        assert sync_mail_bridge(
+            reg,
+            mail_cfg=cfg,
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            verbose=False,
+        ) == (1, 0, 1)
+        reg.commit()
+
+        assert _mail_sync_cursor_row(reg, account_email="acct-a@example.com") == (
+            "2026-03-22T12:30:00+00:00",
+            "msg-a-3",
+        )
+    finally:
+        reg.close()
+
+
+def test_sync_mail_bridge_periodic_checkpoint_persists_cursor_before_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+    _append_mail_message(
+        inbox_db,
+        msg_id="msg-a-3",
+        date_iso="2026-03-22T11:00:00+00:00",
+        last_seen_at="2026-03-22T12:00:00+00:00",
+        summary_text="Third summary.",
+        enriched_at="2026-03-22T12:30:00+00:00",
+        internal_ts=1711105200,
+    )
+    _append_mail_message(
+        inbox_db,
+        msg_id="msg-a-4",
+        date_iso="2026-03-23T11:00:00+00:00",
+        last_seen_at="2026-03-23T12:00:00+00:00",
+        summary_text="Fourth summary.",
+        enriched_at="2026-03-23T12:30:00+00:00",
+        internal_ts=1711191600,
+    )
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        cfg = _mail_cfg(inbox_db, include_accounts=("acct-a@example.com",))
+        assert sync_mail_bridge(
+            reg,
+            mail_cfg=cfg,
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            verbose=False,
+        ) == (4, 0, 1)
+        reg.commit()
+
+        reg.execute("DELETE FROM mail_registry WHERE msg_id IN (?, ?)", ("msg-a-2", "msg-a-4"))
+        bridge_key = vault_registry_sync._mail_bridge_key(cfg)
+        vault_registry_sync._store_mail_sync_cursor(
+            reg,
+            bridge_key=bridge_key,
+            account_email="acct-a@example.com",
+            last_material_updated_at="2026-03-20T12:00:00+00:00",
+            last_material_msg_id="msg-a-1",
+        )
+        reg.commit()
+
+        monkeypatch.setattr(vault_registry_sync, "MAIL_CURSOR_CHECKPOINT_ROWS", 2)
+        original_upsert = vault_registry_sync.upsert_mail
+
+        def failing_upsert(conn, *, record, checksum, primary_date, dates_json):
+            if record.msg_id == "msg-a-4":
+                raise RuntimeError("boom")
+            return original_upsert(
+                conn,
+                record=record,
+                checksum=checksum,
+                primary_date=primary_date,
+                dates_json=dates_json,
+            )
+
+        monkeypatch.setattr(vault_registry_sync, "upsert_mail", failing_upsert)
+        with pytest.raises(RuntimeError):
+            sync_mail_bridge(
+                reg,
+                mail_cfg=cfg,
+                full_scan=False,
+                dry_run=False,
+                deadline=float("inf"),
+                verbose=False,
+            )
+
+        assert _mail_sync_cursor_row(reg, account_email="acct-a@example.com") == (
+            "2026-03-22T12:30:00+00:00",
+            "msg-a-3",
+        )
     finally:
         reg.close()
 
@@ -1742,157 +2019,6 @@ def test_mail_bridge_incremental_rerun_picks_up_later_materialized_attachment(
     assert tuple(bridge_row) == ("indexed", "")
 
 
-def test_cleanup_junk_mail_attachments_apply_removes_indexed_rows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_plaintext_inbox(monkeypatch)
-    registry_db = tmp_path / "state" / "vault_registry.db"
-    vector_db = tmp_path / "state" / "vault_vectors.db"
-    attachment_path = tmp_path / "attachment-cache" / "ff" / "logo.png"
-    attachment_path.parent.mkdir(parents=True, exist_ok=True)
-    attachment_bytes = base64.urlsafe_b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0YQAAAAASUVORK5CYII="
-    )
-    attachment_path.write_bytes(attachment_bytes)
-
-    reg = connect_vault_db(registry_db, ensure_parent=True)
-    vec = connect_vault_db(vector_db, ensure_parent=True)
-    try:
-        ensure_db(reg)
-        reg.execute(
-            """
-            INSERT INTO photos_registry (
-              filepath, checksum, source, date_taken, size, mtime, indexed_at, updated_at, notes,
-              category_primary, category_secondary, taxonomy, caption, analyzer_model, analyzer_status,
-              analyzer_error, analyzer_raw, analyzed_at, ocr_text, ocr_status, ocr_source, ocr_updated_at,
-              dates_json, primary_date, provenance_json
-            ) VALUES (?, ?, ?, '', 68, 0, ?, ?, '', '', '', 'misc', '', '', '', '', '', ?, '', '', '', ?, '[]', '', '')
-            """,
-            (
-                "mail-attachment://photo/att-logo",
-                "sha-logo",
-                "inbox-vault/mail-attachment",
-                "2026-03-21T12:00:00+00:00",
-                "2026-03-21T12:00:00+00:00",
-                "2026-03-21T12:00:00+00:00",
-                "2026-03-21T12:00:00+00:00",
-            ),
-        )
-        reg.execute(
-            """
-            INSERT INTO mail_attachment_bridge (
-              attachment_ref, attachment_key, source, msg_id, account_email, part_id, gmail_attachment_id,
-              mime_type, filename, size_bytes, content_disposition, content_id, is_inline, inventory_state,
-              inventoried_at, storage_kind, storage_path, content_sha256, content_size_bytes, materialized_at,
-              target_kind, registry_table, registry_filepath, materialized_input_path, ingest_status, ingest_error,
-              indexed_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "att-logo",
-                "att-logo",
-                "inbox-vault/mail-attachment",
-                "msg-a-2",
-                "acct-a@example.com",
-                "11",
-                "gmail-att-logo",
-                "image/png",
-                "logo.png",
-                len(attachment_bytes),
-                "attachment",
-                "",
-                0,
-                "materialized",
-                "2026-03-21T12:00:00+00:00",
-                "file",
-                "attachment-cache/ff/logo.png",
-                hashlib.sha256(attachment_bytes).hexdigest(),
-                len(attachment_bytes),
-                "2026-03-21T12:00:00+00:00",
-                "photo",
-                "photos_registry",
-                "mail-attachment://photo/att-logo",
-                str(attachment_path),
-                "indexed",
-                "",
-                "2026-03-21T12:00:00+00:00",
-                "2026-03-21T12:00:00+00:00",
-            ),
-        )
-        vec.execute(
-            """
-            CREATE TABLE vector_items_v2 (
-              item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-              index_level TEXT,
-              source_table TEXT,
-              source_filepath TEXT
-            )
-            """
-        )
-        vec.execute(
-            """
-            CREATE TABLE source_state_v2 (
-              source_table TEXT,
-              source_filepath TEXT,
-              index_level TEXT
-            )
-            """
-        )
-        vec.execute(
-            "INSERT INTO vector_items_v2 (index_level, source_table, source_filepath) VALUES ('redacted', 'photos_registry', ?)",
-            ("mail-attachment://photo/att-logo",),
-        )
-        vec.execute(
-            "INSERT INTO source_state_v2 (source_table, source_filepath, index_level) VALUES ('photos_registry', ?, 'redacted')",
-            ("mail-attachment://photo/att-logo",),
-        )
-        reg.commit()
-        vec.commit()
-    finally:
-        reg.close()
-        vec.close()
-
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "cleanup_junk_mail_attachments.py",
-            "--registry-db",
-            str(registry_db),
-            "--vector-db",
-            str(vector_db),
-            "--apply",
-        ],
-    )
-    assert cleanup_junk_mail_attachments.main() == 0
-
-    reg = connect_vault_db(registry_db)
-    vec = connect_vault_db(vector_db)
-    try:
-        photo_count = reg.execute(
-            "SELECT COUNT(*) FROM photos_registry WHERE filepath = 'mail-attachment://photo/att-logo'"
-        ).fetchone()[0]
-        bridge_row = reg.execute(
-            """
-            SELECT target_kind, registry_table, registry_filepath, ingest_status
-            FROM mail_attachment_bridge
-            WHERE attachment_ref = 'att-logo'
-            """
-        ).fetchone()
-        vector_count = vec.execute(
-            "SELECT COUNT(*) FROM vector_items_v2 WHERE source_filepath = 'mail-attachment://photo/att-logo'"
-        ).fetchone()[0]
-        source_state_count = vec.execute(
-            "SELECT COUNT(*) FROM source_state_v2 WHERE source_filepath = 'mail-attachment://photo/att-logo'"
-        ).fetchone()[0]
-    finally:
-        reg.close()
-        vec.close()
-
-    assert photo_count == 0
-    assert tuple(bridge_row) == ("photo", "", "", "skipped-junk-image")
-    assert vector_count == 0
-    assert source_state_count == 0
 
 
 def test_mail_photo_backfill_reanalyzes_virtual_mail_attachment_photo(

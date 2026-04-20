@@ -451,6 +451,65 @@ def test_update_mail_source_widens_vector_update_scope_for_mail_attachments(monk
     assert vector_cmd[vector_cmd.index("--source") + 1] == "all"
 
 
+def test_update_mail_source_stays_mail_only_when_attachment_import_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = argparse.Namespace(
+        max=None,
+        registry_db="/tmp/registry.db",
+        vectors_db="/tmp/vectors.db",
+        docs_root=[],
+        photos_root=[],
+        source="mail",
+        disable_summary=False,
+        disable_photo_analysis=False,
+        summary_base_url=None,
+        summary_model=None,
+        summary_api_key=None,
+        summary_timeout=None,
+        photo_analysis_url=None,
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_pdf_service=False,
+        pdf_parse_url=None,
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        dry_run=False,
+        force_vector_update=False,
+        embed_batch_size=None,
+        embed_batch_tokens=None,
+        embed_max_text_chars=None,
+        disable_redaction=False,
+        redaction_mode="hybrid",
+        redaction_profile="standard",
+        redaction_instruction="",
+        redaction_base_url=None,
+        redaction_model=None,
+        redaction_api_key=None,
+        redaction_timeout=None,
+        verbose=False,
+        _mail_bridge_enabled=True,
+        _mail_bridge_db_path="/tmp/inbox.db",
+        _mail_bridge_password_env="INBOX_VAULT_DB_PASSWORD",
+        _mail_bridge_include_accounts=[],
+        _mail_bridge_import_summary=True,
+        _mail_bridge_import_attachments=False,
+        _mail_bridge_max_body_chunks=7,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, *, label, verbose, dry_run=False):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(vault_ops_cli, "run_cmd", fake_run_cmd)
+    rc = vault_ops_cli.cmd_update(args)
+    assert rc == 0
+    vector_cmd = next(cmd for cmd in calls if str(vault_ops_cli.VECTOR_INDEX) in cmd)
+    assert "--source" in vector_cmd
+    assert vector_cmd[vector_cmd.index("--source") + 1] == "mail"
+
+
 def test_update_forwards_custom_roots_and_pdf_service(monkeypatch: pytest.MonkeyPatch) -> None:
     args = argparse.Namespace(
         max=None,
