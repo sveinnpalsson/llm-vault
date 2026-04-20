@@ -832,6 +832,48 @@ def test_redacted_update_revisits_earlier_sources_when_map_grows(
     assert rc_query_full_level == 2
 
 
+def test_redacted_consistency_pass_logs_repair_sweep_progress(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    _seed_consistency_registry_db(registry_db)
+
+    def fake_model_detect_candidates(text: str, *, cfg, source: str):
+        if "Passport renewal checklist for Jane Doe" in text:
+            return [
+                vault_redaction.RedactionCandidate(
+                    key_name="PERSON",
+                    value="Jane Doe",
+                    source=source,
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(vault_redaction, "_model_detect_candidates", fake_model_detect_candidates)
+
+    emb = StubEmbeddingClient(dim=8)
+    rc = update_index(
+        registry_db,
+        vector_db,
+        embedding_client=emb,
+        source_selection="docs",
+        rebuild=True,
+        verbose=True,
+        redaction_cfg=RedactionConfig(mode="hybrid", enabled=True),
+    )
+    assert rc == 0
+
+    stdout = capsys.readouterr().out
+    assert "stage=index-vectors.consistency" in stdout
+    assert "action=rerun-to-reconcile-redactions" in stdout
+    assert "stage=repair-redacted-registry.docs" in stdout
+    assert "stage=repair-redacted-registry.summary" in stdout
+    assert "[repaired=" in stdout
+
+
 def test_redacted_resume_skips_unaffected_sources_when_map_grows_elsewhere(
     monkeypatch,
     tmp_path: Path,

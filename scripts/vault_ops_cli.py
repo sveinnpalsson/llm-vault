@@ -485,7 +485,7 @@ def cmd_repair(args: argparse.Namespace) -> int:
     if rc != 0:
         return rc
 
-    _print_step("repair", 3, total_steps, "run vector update")
+    _print_step("repair", 3, total_steps, "run vector update / redaction repair")
     if args.no_vectors:
         print("[repair:vector-index] skipped (--no-vectors)")
         return 0

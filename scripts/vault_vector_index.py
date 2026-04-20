@@ -189,6 +189,7 @@ def _emit_vector_progress(
     last_emit_mono: float,
     verbose: bool,
     stats: UpdateStats,
+    repair_sweep: bool = False,
     force: bool = False,
 ) -> float:
     now_mono = time.monotonic()
@@ -217,10 +218,21 @@ def _emit_vector_progress(
         f"[indexed={stats.indexed_sources}] "
         f"[skipped={stats.skipped_sources}] "
         f"[reused={sum(source.checksum_reused for source in stats.source_stats.values())}] "
-        f"[redacted={stats.items_redacted}]",
+        f"[redacted={stats.items_redacted}]"
+        + (
+            f" [repaired={stats.indexed_sources}] "
+            f"[redaction_entries_total={stats.redaction_entries_total}]"
+            if repair_sweep
+            else ""
+        ),
         flush=True,
     )
     return now_mono
+
+
+def _vector_stage_name(kind: str, *, consistency_pass: bool) -> str:
+    prefix = "repair-redacted-registry" if consistency_pass else "index-vectors"
+    return f"{prefix}.{kind}"
 
 
 def _source_update_stats(stats: UpdateStats, handler: SourceHandler) -> SourceUpdateStats:
@@ -811,6 +823,7 @@ def _flush_vector_skip_batch(
     last_emit_mono: float,
     verbose: bool,
     stats: UpdateStats,
+    repair_sweep: bool = False,
 ) -> tuple[float, int, str | None, int, int]:
     if batch_count <= 0 or not batch_reason:
         return last_emit_mono, 0, None, 0, 0
@@ -825,6 +838,7 @@ def _flush_vector_skip_batch(
         last_emit_mono=last_emit_mono,
         verbose=verbose,
         stats=stats,
+        repair_sweep=repair_sweep,
     )
     return next_emit, 0, None, 0, 0
 
@@ -2349,6 +2363,7 @@ def update_index(
         for handler in selected_handlers
     }
     overall_total = sum(source_totals.values())
+    selected_sections = ",".join(handler.kind for handler in selected_handlers) or "none"
 
     try:
         print(
@@ -2392,6 +2407,19 @@ def update_index(
             redaction_map=redaction_map,
         )
         stats.redaction_entries_total = len(redaction_map.value_to_placeholder)
+        if consistency_pass:
+            print(
+                "[progress] "
+                "[stage=repair-redacted-registry] "
+                "[item=0/1] "
+                f"[overall=0/{max(overall_total, 0)}] "
+                f"[action=start sections={selected_sections}] "
+                f"[elapsed={time.monotonic() - started_mono:.1f}s] "
+                "[eta=unknown] "
+                f"[repaired=0] "
+                f"[redaction_entries_total={stats.redaction_entries_total}]",
+                flush=True,
+            )
 
         existing_sources = int(
             vec_conn.execute(
@@ -2454,7 +2482,7 @@ def update_index(
             vec_conn.commit()
 
         for handler in selected_handlers:
-            stage = f"index-vectors.{handler.kind}"
+            stage = _vector_stage_name(handler.kind, consistency_pass=consistency_pass)
             stage_total = int(source_totals.get(handler.kind, 0))
             last_progress_mono = _emit_vector_progress(
                 stage=stage,
@@ -2467,6 +2495,7 @@ def update_index(
                 last_emit_mono=last_progress_mono,
                 verbose=verbose,
                 stats=stats,
+                repair_sweep=consistency_pass,
                 force=True,
             )
             dim_row = vec_conn.execute(
@@ -2531,6 +2560,7 @@ def update_index(
                             last_emit_mono=last_progress_mono,
                             verbose=verbose,
                             stats=stats,
+                            repair_sweep=consistency_pass,
                         )
                     skip_reason = pending_reason
                     skip_batch += 1
@@ -2555,6 +2585,7 @@ def update_index(
                             last_emit_mono=last_progress_mono,
                             verbose=verbose,
                             stats=stats,
+                            repair_sweep=consistency_pass,
                         )
                     continue
 
@@ -2596,6 +2627,7 @@ def update_index(
                             last_emit_mono=last_progress_mono,
                             verbose=verbose,
                             stats=stats,
+                            repair_sweep=consistency_pass,
                         )
                     skip_reason = "skipping-already-processed"
                     skip_batch += 1
@@ -2620,6 +2652,7 @@ def update_index(
                             last_emit_mono=last_progress_mono,
                             verbose=verbose,
                             stats=stats,
+                            repair_sweep=consistency_pass,
                         )
                     continue
 
@@ -2641,6 +2674,7 @@ def update_index(
                     last_emit_mono=last_progress_mono,
                     verbose=verbose,
                     stats=stats,
+                    repair_sweep=consistency_pass,
                 )
                 last_progress_mono = _emit_vector_progress(
                     stage=stage,
@@ -2653,6 +2687,7 @@ def update_index(
                     last_emit_mono=last_progress_mono,
                     verbose=verbose,
                     stats=stats,
+                    repair_sweep=consistency_pass,
                 )
                 redaction_run = redact_chunks_with_persistent_map(
                     [item.text for item in items],
@@ -2718,6 +2753,7 @@ def update_index(
                         last_emit_mono=last_progress_mono,
                         verbose=verbose,
                         stats=stats,
+                        repair_sweep=consistency_pass,
                     )
                     continue
 
@@ -2736,6 +2772,7 @@ def update_index(
                     last_emit_mono=last_progress_mono,
                     verbose=verbose,
                     stats=stats,
+                    repair_sweep=consistency_pass,
                 )
                 embeddings, embedding_dim = embedding_client.embed_texts(texts)
                 if embedding_dim <= 0:
@@ -2772,6 +2809,7 @@ def update_index(
                     last_emit_mono=last_progress_mono,
                     verbose=verbose,
                     stats=stats,
+                    repair_sweep=consistency_pass,
                 )
             (
                 last_progress_mono,
@@ -2791,6 +2829,7 @@ def update_index(
                 last_emit_mono=last_progress_mono,
                 verbose=verbose,
                 stats=stats,
+                repair_sweep=consistency_pass,
             )
 
         if (
@@ -2803,7 +2842,7 @@ def update_index(
                 "[stage=index-vectors.consistency] "
                 "[item=1/1] "
                 f"[overall={stats.processed_sources}/{max(overall_total, 0)}] "
-                f"[action=rerun-to-reconcile-redactions new_redaction_entries={stats.redaction_entries_added}] "
+                f"[action=rerun-to-reconcile-redactions new_redaction_entries={stats.redaction_entries_added} sections={selected_sections}] "
                 f"[elapsed={time.monotonic() - started_mono:.1f}s] "
                 "[eta=unknown] "
                 "[note=unchanged-sources-will-be-skipped]",
@@ -2831,6 +2870,21 @@ def update_index(
 
         cleanup_stale(vec_conn, reg_conn, stats)
         vec_conn.commit()
+        if consistency_pass:
+            last_progress_mono = _emit_vector_progress(
+                stage="repair-redacted-registry.summary",
+                stage_done=1,
+                stage_total=1,
+                overall_done=stats.processed_sources,
+                overall_total=overall_total,
+                action=f"completed sections={selected_sections}",
+                started_mono=started_mono,
+                last_emit_mono=last_progress_mono,
+                verbose=verbose,
+                stats=stats,
+                repair_sweep=True,
+                force=True,
+            )
         last_progress_mono = _emit_vector_progress(
             stage="index-vectors.cleanup",
             stage_done=1,
