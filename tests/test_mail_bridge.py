@@ -179,6 +179,62 @@ def _seed_inbox_db(inbox_db: Path) -> None:
         conn.close()
 
 
+def test_sync_mail_bridge_verbose_logs_progress_for_mail_and_attachments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    _set_plaintext_inbox(monkeypatch)
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    inbox_db = tmp_path / "inbox.db"
+    _seed_inbox_db(inbox_db)
+    _seed_inbox_attachment_inventory(inbox_db)
+
+    reg = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        ensure_db(reg)
+        updated, pruned, accounts_processed = sync_mail_bridge(
+            reg,
+            mail_cfg=_mail_cfg(inbox_db, include_accounts=("acct-a@example.com",)),
+            full_scan=False,
+            dry_run=False,
+            deadline=float("inf"),
+            text_cap=40000,
+            pdf_cfg=PdfParseConfig(
+                enabled=False,
+                parse_url="",
+                timeout_seconds=60,
+                profile="auto",
+            ),
+            summary_cfg=SummaryConfig(
+                enabled=True,
+                base_url="http://127.0.0.1:8080/v1",
+                model="test-summary-model",
+                api_key="",
+                timeout_seconds=30,
+                max_input_chars=12000,
+                max_output_chars=650,
+            ),
+            chat_client=_FakeChatClient(),
+            photo_client=_FakePhotoClient(),
+            verbose=True,
+        )
+        reg.commit()
+    finally:
+        reg.close()
+
+    assert updated == 4
+    assert pruned == 0
+    assert accounts_processed == 1
+
+    stdout = capsys.readouterr().out
+    assert "stage=4/6.mail-sync.mail" in stdout
+    assert "action=start account=acct-a@example.com" in stdout
+    assert "action=account-done account=acct-a@example.com" in stdout
+    assert "stage=4/6.mail-sync.attachments" in stdout
+    assert ("stage=4/6.mail-sync.docs" in stdout) or ("stage=4/6.mail-sync.photos" in stdout)
+
+
 def _append_long_mail_message(inbox_db: Path) -> None:
     token_count = 9000
     words = []

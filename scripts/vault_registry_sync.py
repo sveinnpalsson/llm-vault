@@ -1536,6 +1536,8 @@ def sync_mail_bridge(
     accounts_processed = 0
     live_records: dict[str, set[str]] = {}
     interrupted = False
+    mail_started_mono = time.monotonic()
+    mail_last_emit_mono = mail_started_mono
 
     inbox_conn = _connect_mail_bridge_db(mail_cfg)
     try:
@@ -1561,9 +1563,25 @@ def sync_mail_bridge(
 
             accounts_processed += 1
             max_cursor = ("", "")
+            account_total = len(records)
+            account_skipped = 0
+            skip_batch = 0
+            skip_stage_done = 0
+            mail_last_emit_mono = emit_registry_repair_progress(
+                stage="4/6.mail-sync.mail",
+                stage_done=0,
+                stage_total=account_total,
+                action=f"start account={account_email}",
+                started_mono=mail_started_mono,
+                last_emit_mono=mail_last_emit_mono,
+                verbose=verbose,
+                repaired=updated,
+                skipped=account_skipped,
+                force=True,
+            )
 
             if dry_run:
-                for record in records:
+                for idx, record in enumerate(records, start=1):
                     if should_stop(deadline, budget):
                         interrupted = True
                         break
@@ -1591,14 +1609,79 @@ def sync_mail_bridge(
                         if budget is not None and not budget.consume():
                             interrupted = True
                             break
+                        if skip_batch > 0:
+                            mail_last_emit_mono = emit_registry_repair_progress(
+                                stage="4/6.mail-sync.mail",
+                                stage_done=skip_stage_done,
+                                stage_total=account_total,
+                                action=f"skipping-unchanged count={skip_batch} account={account_email}",
+                                started_mono=mail_started_mono,
+                                last_emit_mono=mail_last_emit_mono,
+                                verbose=verbose,
+                                repaired=updated,
+                                skipped=account_skipped,
+                            )
+                            skip_batch = 0
                         updated += 1
+                        mail_last_emit_mono = emit_registry_repair_progress(
+                            stage="4/6.mail-sync.mail",
+                            stage_done=idx,
+                            stage_total=account_total,
+                            action=f"would-repair account={account_email}",
+                            started_mono=mail_started_mono,
+                            last_emit_mono=mail_last_emit_mono,
+                            verbose=verbose,
+                            repaired=updated,
+                            skipped=account_skipped,
+                        )
+                    else:
+                        account_skipped += 1
+                        skip_batch += 1
+                        skip_stage_done = idx
+                        if time.monotonic() - mail_last_emit_mono >= PROGRESS_HEARTBEAT_SECONDS:
+                            mail_last_emit_mono = emit_registry_repair_progress(
+                                stage="4/6.mail-sync.mail",
+                                stage_done=skip_stage_done,
+                                stage_total=account_total,
+                                action=f"skipping-unchanged count={skip_batch} account={account_email}",
+                                started_mono=mail_started_mono,
+                                last_emit_mono=mail_last_emit_mono,
+                                verbose=verbose,
+                                repaired=updated,
+                                skipped=account_skipped,
+                            )
+                            skip_batch = 0
                 if interrupted:
                     break
+                if skip_batch > 0:
+                    mail_last_emit_mono = emit_registry_repair_progress(
+                        stage="4/6.mail-sync.mail",
+                        stage_done=skip_stage_done,
+                        stage_total=account_total,
+                        action=f"skipping-unchanged count={skip_batch} account={account_email}",
+                        started_mono=mail_started_mono,
+                        last_emit_mono=mail_last_emit_mono,
+                        verbose=verbose,
+                        repaired=updated,
+                        skipped=account_skipped,
+                    )
+                mail_last_emit_mono = emit_registry_repair_progress(
+                    stage="4/6.mail-sync.mail",
+                    stage_done=account_total,
+                    stage_total=account_total,
+                    action=f"account-done account={account_email} dry-run",
+                    started_mono=mail_started_mono,
+                    last_emit_mono=mail_last_emit_mono,
+                    verbose=verbose,
+                    repaired=updated,
+                    skipped=account_skipped,
+                    force=True,
+                )
                 continue
 
             try:
                 conn.execute("BEGIN")
-                for record in records:
+                for idx, record in enumerate(records, start=1):
                     if should_stop(deadline, budget):
                         interrupted = True
                         break
@@ -1623,10 +1706,39 @@ def sync_mail_bridge(
                         dates_json,
                     )
                     if _mail_registry_snapshot(conn, filepath=filepath) == new_snapshot:
+                        account_skipped += 1
+                        skip_batch += 1
+                        skip_stage_done = idx
+                        if time.monotonic() - mail_last_emit_mono >= PROGRESS_HEARTBEAT_SECONDS:
+                            mail_last_emit_mono = emit_registry_repair_progress(
+                                stage="4/6.mail-sync.mail",
+                                stage_done=skip_stage_done,
+                                stage_total=account_total,
+                                action=f"skipping-unchanged count={skip_batch} account={account_email}",
+                                started_mono=mail_started_mono,
+                                last_emit_mono=mail_last_emit_mono,
+                                verbose=verbose,
+                                repaired=updated,
+                                skipped=account_skipped,
+                            )
+                            skip_batch = 0
                         continue
                     if budget is not None and not budget.consume():
                         interrupted = True
                         break
+                    if skip_batch > 0:
+                        mail_last_emit_mono = emit_registry_repair_progress(
+                            stage="4/6.mail-sync.mail",
+                            stage_done=skip_stage_done,
+                            stage_total=account_total,
+                            action=f"skipping-unchanged count={skip_batch} account={account_email}",
+                            started_mono=mail_started_mono,
+                            last_emit_mono=mail_last_emit_mono,
+                            verbose=verbose,
+                            repaired=updated,
+                            skipped=account_skipped,
+                        )
+                        skip_batch = 0
                     upsert_mail(
                         conn,
                         record=record,
@@ -1636,6 +1748,17 @@ def sync_mail_bridge(
                     )
                     updated += 1
                     max_cursor = (record.material_updated_at, record.msg_id)
+                    mail_last_emit_mono = emit_registry_repair_progress(
+                        stage="4/6.mail-sync.mail",
+                        stage_done=idx,
+                        stage_total=account_total,
+                        action=f"repaired account={account_email}",
+                        started_mono=mail_started_mono,
+                        last_emit_mono=mail_last_emit_mono,
+                        verbose=verbose,
+                        repaired=updated,
+                        skipped=account_skipped,
+                    )
                 if full_scan:
                     _store_mail_sync_cursor(
                         conn,
@@ -1656,6 +1779,30 @@ def sync_mail_bridge(
             except Exception:
                 conn.rollback()
                 raise
+            if skip_batch > 0:
+                mail_last_emit_mono = emit_registry_repair_progress(
+                    stage="4/6.mail-sync.mail",
+                    stage_done=skip_stage_done,
+                    stage_total=account_total,
+                    action=f"skipping-unchanged count={skip_batch} account={account_email}",
+                    started_mono=mail_started_mono,
+                    last_emit_mono=mail_last_emit_mono,
+                    verbose=verbose,
+                    repaired=updated,
+                    skipped=account_skipped,
+                )
+            mail_last_emit_mono = emit_registry_repair_progress(
+                stage="4/6.mail-sync.mail",
+                stage_done=account_total,
+                stage_total=account_total,
+                action=f"account-done account={account_email}",
+                started_mono=mail_started_mono,
+                last_emit_mono=mail_last_emit_mono,
+                verbose=verbose,
+                repaired=updated,
+                skipped=account_skipped,
+                force=True,
+            )
             if interrupted:
                 break
 
@@ -2387,6 +2534,8 @@ def sync_mail_attachments_bridge(
     accounts_processed = 0
     live_records: dict[str, set[str]] = {}
     interrupted = False
+    attachments_started_mono = time.monotonic()
+    attachments_last_emit_mono = attachments_started_mono
     cache_root = conn.execute("PRAGMA database_list").fetchone()
     db_file = Path(str(cache_root[2])) if cache_root and str(cache_root[2] or "").strip() else ROOT / "state" / "vault_registry.db"
     attachment_cache_root = db_file.parent / "mail_attachment_cache"
@@ -2413,9 +2562,23 @@ def sync_mail_attachments_bridge(
                 live_records[account_email] = set()
             accounts_processed += 1
             max_cursor = ("", "")
+            message_total = len(messages)
+            attachments_skipped = 0
+            attachments_last_emit_mono = emit_registry_repair_progress(
+                stage="4/6.mail-sync.attachments",
+                stage_done=0,
+                stage_total=message_total,
+                action=f"start account={account_email}",
+                started_mono=attachments_started_mono,
+                last_emit_mono=attachments_last_emit_mono,
+                verbose=verbose,
+                repaired=updated,
+                skipped=attachments_skipped,
+                force=True,
+            )
             try:
                 conn.execute("BEGIN")
-                for msg_id, acct, inventoried_at in messages:
+                for msg_idx, (msg_id, acct, inventoried_at) in enumerate(messages, start=1):
                     if should_stop(deadline, budget):
                         interrupted = True
                         break
@@ -2443,6 +2606,7 @@ def sync_mail_attachments_bridge(
                         ingest_status = material_status
                         ingest_error = material_error
                         indexed = False
+                        repair_target = "mail"
                         if materialized_path is not None:
                             target_kind = _supported_attachment_kind(
                                 record,
@@ -2451,9 +2615,11 @@ def sync_mail_attachments_bridge(
                             if target_kind == "doc":
                                 registry_table = "docs_registry"
                                 registry_filepath = _mail_attachment_registry_filepath(record, kind="doc")
+                                repair_target = "docs"
                             elif target_kind == "photo":
                                 registry_table = "photos_registry"
                                 registry_filepath = _mail_attachment_registry_filepath(record, kind="photo")
+                                repair_target = "photos"
                             else:
                                 ingest_status = "unsupported"
                                 ingest_error = f"unsupported attachment type: mime={record.mime_type} ext={materialized_path.suffix.lower()}"
@@ -2466,6 +2632,7 @@ def sync_mail_attachments_bridge(
                             if skip_attachment:
                                 ingest_status = "skipped-junk-image"
                                 ingest_error = skip_reason
+                                attachments_skipped += 1
                                 _delete_attachment_registry_row(
                                     conn,
                                     registry_table=registry_table,
@@ -2510,8 +2677,25 @@ def sync_mail_attachments_bridge(
                                     if indexed and counters is not None:
                                         counters["photos_indexed"] += 1
                                 ingest_status = "indexed" if indexed else "unchanged"
+                                if not indexed:
+                                    attachments_skipped += 1
                             else:
                                 ingest_status = "dry-run"
+                        attachments_last_emit_mono = emit_registry_repair_progress(
+                            stage=f"4/6.mail-sync.{repair_target}",
+                            stage_done=msg_idx,
+                            stage_total=message_total,
+                            action=(
+                                f"repaired account={acct} msg={msg_id}"
+                                if indexed
+                                else f"checked account={acct} msg={msg_id}"
+                            ),
+                            started_mono=attachments_started_mono,
+                            last_emit_mono=attachments_last_emit_mono,
+                            verbose=verbose,
+                            repaired=updated,
+                            skipped=attachments_skipped,
+                        )
                         new_snapshot = (
                             record.attachment_key,
                             MAIL_ATTACHMENT_SOURCE,
@@ -2555,6 +2739,17 @@ def sync_mail_attachments_bridge(
                         )
                         updated += 1
                     max_cursor = (inventoried_at, msg_id)
+                    attachments_last_emit_mono = emit_registry_repair_progress(
+                        stage="4/6.mail-sync.attachments",
+                        stage_done=msg_idx,
+                        stage_total=message_total,
+                        action=f"processed-message account={acct} msg={msg_id}",
+                        started_mono=attachments_started_mono,
+                        last_emit_mono=attachments_last_emit_mono,
+                        verbose=verbose,
+                        repaired=updated,
+                        skipped=attachments_skipped,
+                    )
                     if interrupted:
                         break
                 if full_scan:
@@ -2577,6 +2772,18 @@ def sync_mail_attachments_bridge(
             except Exception:
                 conn.rollback()
                 raise
+            attachments_last_emit_mono = emit_registry_repair_progress(
+                stage="4/6.mail-sync.attachments",
+                stage_done=message_total,
+                stage_total=message_total,
+                action=f"account-done account={account_email}",
+                started_mono=attachments_started_mono,
+                last_emit_mono=attachments_last_emit_mono,
+                verbose=verbose,
+                repaired=updated,
+                skipped=attachments_skipped,
+                force=True,
+            )
             if interrupted:
                 break
         if full_scan and not dry_run and not interrupted:
@@ -2594,6 +2801,18 @@ def sync_mail_attachments_bridge(
             conn.commit()
     finally:
         inbox_conn.close()
+    attachments_last_emit_mono = emit_registry_repair_progress(
+        stage="4/6.mail-sync.attachments",
+        stage_done=accounts_processed,
+        stage_total=accounts_processed,
+        action="done",
+        started_mono=attachments_started_mono,
+        last_emit_mono=attachments_last_emit_mono,
+        verbose=verbose,
+        repaired=updated,
+        skipped=0,
+        force=True,
+    )
     return updated, pruned, accounts_processed
 
 
@@ -2911,6 +3130,47 @@ def emit_stage_progress(
         f"[action={action}] "
         f"[elapsed={elapsed:.1f}s] "
         f"[eta={_format_eta(eta)}]",
+        flush=True,
+    )
+    return now_mono
+
+
+def emit_registry_repair_progress(
+    *,
+    stage: str,
+    stage_done: int,
+    stage_total: int,
+    action: str,
+    started_mono: float,
+    last_emit_mono: float,
+    verbose: bool,
+    repaired: int,
+    skipped: int,
+    force: bool = False,
+) -> float:
+    now_mono = time.monotonic()
+    if not _should_emit_progress(
+        verbose=verbose,
+        now_mono=now_mono,
+        last_emit_mono=last_emit_mono,
+        completed=stage_done,
+        total=stage_total,
+        force=force,
+    ):
+        return last_emit_mono
+
+    elapsed = max(0.0, now_mono - started_mono)
+    eta = _estimate_eta(elapsed, stage_done, stage_total)
+    total_text = str(max(stage_total, 0))
+    print(
+        "[progress] "
+        f"[stage={stage}] "
+        f"[item={stage_done}/{total_text}] "
+        f"[action={action}] "
+        f"[elapsed={elapsed:.1f}s] "
+        f"[eta={_format_eta(eta)}] "
+        f"[repaired={repaired}] "
+        f"[skipped={skipped}]",
         flush=True,
     )
     return now_mono
@@ -4808,6 +5068,17 @@ def run(cfg: Config, dry_run: bool) -> int:
 
         # 4) Optional mail bridge sync.
         if not should_stop(deadline, budget) and "mail" in selected_source_kinds:
+            last_progress_mono = emit_sync_progress(
+                stage="4/6.mail-sync",
+                stage_done=0,
+                stage_total=0,
+                action="start",
+                started_mono=started_mono,
+                last_emit_mono=last_progress_mono,
+                verbose=cfg.verbose,
+                counters=counters,
+                force=True,
+            )
             try:
                 m_updated, m_pruned, m_accounts = sync_mail_bridge(
                     conn,
@@ -4827,6 +5098,17 @@ def run(cfg: Config, dry_run: bool) -> int:
                 counters["mail_indexed"] += m_updated
                 counters["mail_pruned"] += m_pruned
                 counters["mail_accounts_processed"] += m_accounts
+                last_progress_mono = emit_sync_progress(
+                    stage="4/6.mail-sync",
+                    stage_done=m_accounts,
+                    stage_total=m_accounts,
+                    action=f"done updated={m_updated} pruned={m_pruned}",
+                    started_mono=started_mono,
+                    last_emit_mono=last_progress_mono,
+                    verbose=cfg.verbose,
+                    counters=counters,
+                    force=True,
+                )
                 if m_updated or m_pruned:
                     print(f"mail_bridge\tupdated={m_updated}\tpruned={m_pruned}\taccounts={m_accounts}")
             except Exception as exc:  # noqa: BLE001
