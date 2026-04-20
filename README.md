@@ -110,12 +110,13 @@ parse_url = "http://127.0.0.1:8082/v1/pdf/parse"
 # disable_service = true
 
 [mail_bridge]
+# Optional read-only bridge from inbox-vault.
 enabled = false
-# To enable mail, point this at the local inbox-vault DB.
 db_path = "/absolute/path/to/inbox-vault/data/inbox_vault.db"
 password_env = "INBOX_VAULT_DB_PASSWORD"
 include_accounts = []
 import_summary = true
+import_attachments = true
 
 [search]
 top_k = 5
@@ -130,6 +131,8 @@ Before the first real run:
 - create `state/` if it does not exist yet
 - export `LLM_VAULT_DB_PASSWORD`
 - if you want mail, enable `[mail_bridge]` and point `db_path` at your local `inbox-vault` database
+- leave `import_summary = true` if you want `inbox-vault` summaries folded into mail search text
+- leave `import_attachments = true` if you want supported mail attachments materialized into `llm-vault` docs/photos sources; set it to `false` to keep mail import message-only
 - run `vault-ops status` and fix any wiring warnings before long ingest runs
 
 The first `vault-ops update` initializes the encrypted registry/vector state for this checkout. A bounded first pass can leave the system usable but degraded until the remaining corpus is indexed.
@@ -172,6 +175,7 @@ To enable mail:
 3. point `[mail_bridge].db_path` at the local `inbox-vault` SQLCipher database
 4. make sure the env named by `[mail_bridge].password_env` is exported for the same shell/runtime (default: `INBOX_VAULT_DB_PASSWORD`)
 5. optionally set `include_accounts = ["you@example.com"]` to limit imported accounts
+6. choose whether `import_attachments = true` should ingest supported attachment files as docs/photos rows, or `false` should keep the mail bridge to message bodies and summaries only
 
 Then run:
 
@@ -181,6 +185,12 @@ vault-ops update --source mail
 vault-ops search "budget approval" --source mail --json
 vault-agent search-redacted "budget approval" --source mail --top-k 3
 ```
+
+Attachment import behavior:
+
+- `import_attachments = true` lets the mail bridge materialize supported attachment files into `docs_registry` or `photos_registry` using `mail-attachment://...` paths, so those files participate in normal docs/photo indexing and search.
+- `import_attachments = false` keeps the bridge limited to mail messages and optional summaries; attachments are not imported into docs/photos.
+- When attachment import is enabled, `vault-ops update --source mail` keeps registry sync scoped to mail but widens the vector update pass to `--source all` so newly created mail-derived docs/photos attachment rows are indexed in the same run.
 
 ## OpenClaw Integration
 

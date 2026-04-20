@@ -42,12 +42,15 @@ parse_url = "http://127.0.0.1:8082/v1/pdf/parse"
 # disable_service = false
 
 [mail_bridge]
-# To enable mail, point db_path at the local inbox-vault SQLCipher DB.
+# Optional read-only inbox-vault bridge.
+# `import_summary` keeps inbox-vault summaries in mail search results.
+# `import_attachments` materializes supported mail attachments as llm-vault docs/photos rows.
 enabled = false
 db_path = ""
 password_env = "INBOX_VAULT_DB_PASSWORD"
 include_accounts = []
 import_summary = true
+import_attachments = true
 max_body_chunks = 12
 
 [search]

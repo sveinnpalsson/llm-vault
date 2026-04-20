@@ -85,6 +85,8 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 
 - optional read-only bridge from `inbox-vault`
 - requires a local `inbox-vault` DB path and the env named by `[mail_bridge].password_env` (default: `INBOX_VAULT_DB_PASSWORD`)
+- `import_summary = true` folds `inbox-vault` summaries into mail search text when those summaries exist
+- `import_attachments = true` materializes supported mail attachments into `llm-vault` docs/photos rows; `false` keeps mail ingest message-only
 - when disabled, `--source all` excludes mail and explicit `--source mail` errors
 
 ## Operator automation
@@ -186,3 +188,5 @@ If the mail bridge is enabled:
 vault-ops update --source mail
 vault-ops search "budget approval" --source mail --json
 ```
+
+With `import_attachments = true`, the mail registry pass can create mail-derived docs/photos rows for supported attachments. `vault-ops update --source mail` therefore widens the vector update stage to cover `all` sources in that run so those attachment-backed docs/photos are indexed immediately, without widening the registry sync beyond mail itself.
