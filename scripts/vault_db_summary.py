@@ -415,6 +415,7 @@ def derive_health(
     *,
     inbox_pending: int,
     docs_total: int,
+    docs_vector_eligible: int,
     photos_total: int,
     summaries_ok: int,
     summaries_error: int,
@@ -442,7 +443,7 @@ def derive_health(
         or inbox_pending > 25
         or not redacted_search_available
         or policy_drift_vectors > 0
-        or (docs_total > 0 and docs_vector_sources < docs_total)
+        or (docs_vector_eligible > 0 and docs_vector_sources < docs_vector_eligible)
         or (photos_total > 0 and photos_vector_sources < photos_total)
     ):
         return "degraded"
@@ -457,7 +458,9 @@ def _docs_registry_stats(conn: sqlite3.Connection, handler: SourceHandler) -> di
     )
     summary_ok = int(safe_scalar(conn, f"SELECT COUNT(*) FROM {handler.table} WHERE summary_status = 'ok'") or 0)
     summary_error = int(safe_scalar(conn, f"SELECT COUNT(*) FROM {handler.table} WHERE summary_status = 'error'") or 0)
+    status_counts = summary_status_counts(conn)
     summary_missing = max(0, files_total - summary_present)
+    vector_eligible = max(0, files_total - int(status_counts.get("empty-source") or 0))
     return {
         "kind": handler.kind,
         "label": handler.label,
@@ -475,8 +478,9 @@ def _docs_registry_stats(conn: sqlite3.Connection, handler: SourceHandler) -> di
             "error": summary_error,
             "missing": summary_missing,
             "text_missing": summary_missing,
+            "vector_eligible": vector_eligible,
             "repairable_pending": count_repairable_summary_backfill(conn),
-            "status_counts": summary_status_counts(conn),
+            "status_counts": status_counts,
             "oldest_updated_at": safe_scalar(conn, f"SELECT MIN(summary_updated_at) FROM {handler.table}"),
             "newest_updated_at": safe_scalar(conn, f"SELECT MAX(summary_updated_at) FROM {handler.table}"),
         },
@@ -797,6 +801,7 @@ def main() -> int:
         health = derive_health(
             inbox_pending=int(data["registry"].get("inbox_pending_files") or 0),
             docs_total=int(docs_registry.get("files_total") or 0),
+            docs_vector_eligible=int(docs_summary.get("vector_eligible") or 0),
             photos_total=int(photos_registry.get("files_total") or 0),
             summaries_ok=int(docs_summary.get("present") or 0),
             summaries_error=int(docs_summary.get("error") or 0),

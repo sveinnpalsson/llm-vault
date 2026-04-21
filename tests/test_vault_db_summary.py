@@ -147,6 +147,171 @@ def _seed_registry(registry_db: Path) -> None:
         conn.close()
 
 
+def _seed_registry_with_empty_source(registry_db: Path) -> None:
+    conn = connect_vault_db(registry_db, ensure_parent=True)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE docs_registry (
+              filepath TEXT PRIMARY KEY,
+              checksum TEXT NOT NULL,
+              source TEXT,
+              text_content TEXT,
+              parser TEXT,
+              size INTEGER,
+              mtime REAL,
+              updated_at TEXT,
+              summary_text TEXT,
+              summary_model TEXT,
+              summary_hash TEXT,
+              summary_status TEXT,
+              summary_updated_at TEXT,
+              dates_json TEXT,
+              primary_date TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE photos_registry (
+              filepath TEXT PRIMARY KEY,
+              checksum TEXT NOT NULL,
+              source TEXT,
+              date_taken TEXT,
+              size INTEGER,
+              mtime REAL,
+              updated_at TEXT,
+              notes TEXT,
+              category_primary TEXT,
+              category_secondary TEXT,
+              taxonomy TEXT,
+              caption TEXT,
+              analyzer_status TEXT,
+              ocr_text TEXT,
+              ocr_status TEXT,
+              ocr_source TEXT,
+              ocr_updated_at TEXT,
+              dates_json TEXT,
+              primary_date TEXT
+            )
+            """
+        )
+
+        docs_rows = [
+            (
+                "/vault/docs/a.txt",
+                "doc-ok-1",
+                "generated",
+                "Alpha document body.",
+                "plain",
+                100,
+                1735689600.0,
+                "2026-03-20T00:00:00+00:00",
+                "Alpha summary.",
+                "local-test",
+                "hash-doc-a",
+                "ok",
+                "2026-03-20T00:00:00+00:00",
+                "[]",
+                "2026-03-20T00:00:00+00:00",
+            ),
+            (
+                "/vault/docs/b.txt",
+                "doc-ok-2",
+                "generated",
+                "Beta document body.",
+                "plain",
+                101,
+                1735689601.0,
+                "2026-03-20T00:01:00+00:00",
+                "Beta summary.",
+                "local-test",
+                "hash-doc-b",
+                "ok",
+                "2026-03-20T00:01:00+00:00",
+                "[]",
+                "2026-03-20T00:01:00+00:00",
+            ),
+            (
+                "/vault/docs/c.txt",
+                "doc-ok-3",
+                "generated",
+                "Gamma document body.",
+                "plain",
+                102,
+                1735689602.0,
+                "2026-03-20T00:02:00+00:00",
+                "Gamma summary.",
+                "local-test",
+                "hash-doc-c",
+                "ok",
+                "2026-03-20T00:02:00+00:00",
+                "[]",
+                "2026-03-20T00:02:00+00:00",
+            ),
+            (
+                "/vault/docs/empty.txt",
+                "doc-empty-1",
+                "generated",
+                "",
+                "plain",
+                0,
+                1735689603.0,
+                "2026-03-20T00:03:00+00:00",
+                "",
+                "local-test",
+                "hash-doc-empty",
+                "empty-source",
+                "2026-03-20T00:03:00+00:00",
+                "[]",
+                "2026-03-20T00:03:00+00:00",
+            ),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO docs_registry (
+              filepath, checksum, source, text_content, parser, size, mtime, updated_at,
+              summary_text, summary_model, summary_hash, summary_status, summary_updated_at,
+              dates_json, primary_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            docs_rows,
+        )
+        conn.execute(
+            """
+            INSERT INTO photos_registry (
+              filepath, checksum, source, date_taken, size, mtime, updated_at,
+              notes, category_primary, category_secondary, taxonomy, caption, analyzer_status,
+              ocr_text, ocr_status, ocr_source, ocr_updated_at, dates_json, primary_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "/vault/photos/id-card.jpg",
+                "photo-summary-1",
+                "generated",
+                "2025-01-04T10:30:00+00:00",
+                200,
+                1735689604.0,
+                "2026-03-20T00:05:00+00:00",
+                "identity card notes",
+                "document",
+                "",
+                "docs",
+                "Icelandic identification card",
+                "ok",
+                "Renfei identification reference",
+                "ok",
+                "analyzer:text_raw",
+                "2026-03-20T00:05:00+00:00",
+                "[]",
+                "2025-01-04T10:30:00+00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_status_json_uses_generic_source_keyed_structures(
     tmp_path: Path,
     monkeypatch,
@@ -195,6 +360,53 @@ def test_status_json_uses_generic_source_keyed_structures(
     assert "levels" in payload["vectors"]
     assert payload["vectors"]["levels"]["redacted"]["sources"]["docs"]["sources_indexed"] == 1
     assert payload["vectors"]["levels"]["redacted"]["sources"]["photos"]["sources_indexed"] == 1
+
+
+def test_status_json_ignores_empty_source_docs_for_vector_coverage_health(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    inbox_scanner = tmp_path / "scanner"
+    inbox_scanner.mkdir()
+    _seed_registry_with_empty_source(registry_db)
+
+    rc = update_index(
+        registry_db,
+        vector_db,
+        embedding_client=StubEmbeddingClient(dim=8),
+        source_selection="all",
+        rebuild=True,
+        redaction_cfg=RedactionConfig(mode="regex", enabled=True),
+    )
+    assert rc == 0
+    _ = capsys.readouterr()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "vault_db_summary.py",
+            "--registry-db",
+            str(registry_db),
+            "--vectors-db",
+            str(vector_db),
+            "--inbox-scanner",
+            str(inbox_scanner),
+            "--json",
+        ],
+    )
+    rc = vault_db_summary.main()
+    assert rc == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    docs_summary = payload["registry"]["sources"]["docs"]["summary"]
+    assert docs_summary["status_counts"]["empty-source"] == 1
+    assert docs_summary["vector_eligible"] == 3
+    assert payload["vectors"]["levels"]["redacted"]["sources"]["docs"]["sources_indexed"] == 3
+    assert payload["health"] == "ok"
 
 
 def test_status_json_reports_mail_bridge_source_stats(
