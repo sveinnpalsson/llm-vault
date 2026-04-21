@@ -163,6 +163,22 @@ def test_redaction_map_keeps_valid_single_token_person_entries() -> None:
     assert table.placeholder_to_value["<REDACTED_PERSON_A>"] == "Tempobono"
 
 
+def test_redaction_map_does_not_corrupt_unrelated_preview_prefixes() -> None:
+    table = PersistentRedactionMap.from_rows(
+        [("PERSON", "<REDACTED_PERSON_NF>", "bederson j", "Bederson J")]
+    )
+
+    assert table.apply("On January 15, 2025...") == "On January 15, 2025..."
+
+
+def test_redaction_map_still_replaces_truncated_single_token_boundary_matches() -> None:
+    table = PersistentRedactionMap.from_rows(
+        [("PERSON", "<REDACTED_PERSON_NF>", "bederson j", "Bederson J")]
+    )
+
+    assert table.apply("Meeting with Bederson") == "Meeting with <REDACTED_PERSON_NF>"
+
+
 def test_hybrid_redaction_filters_weak_model_candidates(monkeypatch) -> None:
     from vault_redaction import RedactionCandidate
 

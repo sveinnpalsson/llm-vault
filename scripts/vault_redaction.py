@@ -1017,6 +1017,8 @@ def _replace_partial_boundary(text: str, value: str, placeholder: str) -> str:
     lowered = text.lower()
     for k in range(len(target) - 1, best - 1, -1):
         prefix = target[:k]
+        if re.search(r"\s", prefix):
+            continue
         if lowered.endswith(prefix):
             text = text[: len(text) - k] + placeholder
             lowered = text.lower()
@@ -1024,6 +1026,8 @@ def _replace_partial_boundary(text: str, value: str, placeholder: str) -> str:
 
     for k in range(len(target) - 1, best - 1, -1):
         suffix = target[len(target) - k :]
+        if re.search(r"\s", suffix):
+            continue
         if lowered.startswith(suffix):
             text = placeholder + text[k:]
             break
