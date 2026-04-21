@@ -41,6 +41,7 @@ Runtime defaults:
 
 - summary, embedding, and model-redaction share one local default base URL: `http://127.0.0.1:8080/v1`
 - photo-analysis and PDF parse services are optional; the template ships with localhost placeholder endpoints (`127.0.0.1:8081` and `127.0.0.1:8082`) and can be explicitly disabled via `[photo_analysis].disable_service = true` / `[pdf].disable_service = true`
+- if you use the local `../photo_api` reference stack, the worker commonly listens on `127.0.0.1:18110`, so `[photo_analysis].url` would typically be `http://127.0.0.1:18110/analyze`
 - `[runtime].max` can set a default source-count cap for bounded `vault-ops update` / `repair` runs
 - `vault-ops status` reports setup warnings for common local miswires (missing DB password, missing content roots, optional service unset, non-local URLs, and unreachable configured endpoints)
 
@@ -68,17 +69,107 @@ All configured service URLs must stay local-only (`127.0.0.1`, `localhost`, or e
 
 ### Photo analysis
 
-- optional photo caption/category/OCR enrichment
+- optional local image enrichment for photo routing, category tagging, captions, and OCR-backed search
 - expects a local HTTP endpoint configured at `[photo_analysis].url`
+- `vault-ops` uploads each image as multipart form data with field `file` and reads back a JSON object with a top-level `sidecar`
 - explicit disable remains available through `--disable-photo-analysis` or `[photo_analysis].disable_service = true`
-- `llm-vault` consumes analyzer output through a `sidecar` payload with fields such as `caption`, `category.primary`, and `text.raw`
-- if missing or disabled, photos still ingest but enrichment and OCR-backed photo search are limited
+- if missing or disabled, photos still ingest, but docs-style routing for image files, category and taxonomy enrichment, captions, and OCR-backed photo search are reduced
+
+#### Required contract
+
+`llm-vault` does not require one specific implementation. It requires a small local HTTP contract that matches the parser in `scripts/vault_registry_sync.py`.
+
+Request shape:
+
+- `POST` to `[photo_analysis].url`
+- `multipart/form-data`
+- uploaded file field: `file`
+- optional form field: `force=true|false`
+
+Minimum useful response shape:
+
+```json
+{
+  "ok": true,
+  "cached": false,
+  "sidecar": {
+    "caption": { "text": "Receipt on a wooden table." },
+    "category": { "primary": "receipt" },
+    "text": { "raw": "Total 24.81\nVisa ****1234" }
+  }
+}
+```
+
+Required for useful ingestion:
+
+- `sidecar.category.primary`
+- `sidecar.caption.text`
+- `sidecar.text.raw`
+
+Optional richer metadata:
+
+- `sidecar.category.secondary`
+- `sidecar.category.scores`
+- `sidecar.pipeline`
+- `sidecar.people`
+- OCR blocks, face boxes, embeddings, and other sidecar fields
+
+Current consumption limits:
+
+- `llm-vault` does not use face identities or face embeddings for retrieval
+- `llm-vault` does not consume OCR block geometry, it only uses `text.raw`
+- richer sidecar metadata is safe to return, but most of it is ignored today
+
+#### Category compatibility and mapping
+
+The canonical compatibility set is:
+
+- `document`
+- `receipt`
+- `screenshot`
+- `whiteboard`
+- `selfie`
+- `portrait`
+- `group_photo`
+
+`llm-vault` maps those categories into its own routing and taxonomy model:
+
+- `document`, `receipt` -> routed as document-like images, taxonomy `docs`
+- `screenshot` -> taxonomy `screenshots`
+- `whiteboard` -> taxonomy `notes`
+- `selfie`, `portrait`, `group_photo` -> taxonomy `personal`
+- anything else -> taxonomy `misc`
+
+Important implications:
+
+- `document` and `receipt` are special because they can affect docs-style routing for image files and determine whether OCR text is retained as searchable photo text
+- screenshots and whiteboards may be handled more richly by the reference pipeline, but `llm-vault` currently consumes only the mapped category, caption text, and raw OCR text
+- other classifier labels are acceptable, but they mostly collapse to `misc`, so they should not be documented as stable first-class taxonomies
+
+#### Recommended local stack
+
+- captioning: Ollama with `qwen2.5vl:7b`
+- OCR: PaddleOCR with `PP-OCRv5`
+- faces: InsightFace with `buffalo_l`
+- classifier: OpenCLIP `ViT-B-32` with a small fixed label set that includes the canonical compatibility categories above
+- PDF handling: keep it separate from photo analysis, use `pdftotext` first for native PDFs and a local PDF parse service for scanned or sparse PDFs
+
+The local `../photo_api` repo is a good reference implementation of that split stack:
+
+- worker API for `/analyze`
+- OpenCLIP classifier for category labels
+- PaddleOCR service for `text.raw`
+- InsightFace service for optional face enrichment
+- Ollama-backed vision captioning
+
+It is a recommended example implementation, not a hard dependency. Any local service that honors the contract above is acceptable.
 
 ### PDF parse service
 
 - optional fallback for scanned or sparse PDFs
 - expects a local HTTP endpoint configured at `[pdf].parse_url`
 - explicit disable remains available through `--disable-pdf-service` or `[pdf].disable_service = true`
+- this is a separate contract from photo analysis, do not treat scanned PDFs as part of the photo-analysis API
 - if missing, native-text PDFs can still use `pdftotext`, but scanned PDFs may ingest with weak text
 
 ### Mail bridge

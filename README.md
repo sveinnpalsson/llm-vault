@@ -26,6 +26,8 @@ The diagram below shows the kind of local stack this project is designed for. If
 
 ![llm-vault local stack pipeline](assets/pipeline-figure.png)
 
+Photo analysis is optional, but when enabled `llm-vault` expects a small local HTTP contract: it uploads each photo to `[photo_analysis].url` as multipart form data, then reads back a sidecar-like JSON payload. The minimum useful fields are `sidecar.category.primary`, `sidecar.caption.text`, and `sidecar.text.raw`. A recommended local reference implementation lives in `../photo_api`, but any local service that matches that contract will work.
+
 A public-facing redaction results page lives under [`eval/redaction/`](eval/redaction/README.md). It summarizes what the current redaction engine catches, what it still misses, and how to rerun the benchmark.
 
 ## Safety Boundary
@@ -102,7 +104,8 @@ base_url = "http://127.0.0.1:8080/v1"
 model = "gemma4-26b"
 
 [photo_analysis]
-url = "http://127.0.0.1:8081/analyze"
+# Example using the local ../photo_api worker.
+url = "http://127.0.0.1:18110/analyze"
 # disable_service = true
 
 [pdf]
