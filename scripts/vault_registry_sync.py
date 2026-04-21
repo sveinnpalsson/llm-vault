@@ -254,6 +254,20 @@ class WorkBudget:
         return True
 
 
+@dataclass(frozen=True)
+class PhotoBackfillSyncState:
+    source_selection: str
+    row_limit: int
+    window_total: int
+    processed_count: int
+    window_head_updated_at: str
+    window_head_filepath: str
+    window_tail_updated_at: str
+    window_tail_filepath: str
+    last_processed_updated_at: str
+    last_processed_filepath: str
+
+
 @dataclass
 class SummaryResult:
     text: str
@@ -999,6 +1013,23 @@ def ensure_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS photo_backfill_sync_state (
+          source_selection TEXT PRIMARY KEY,
+          row_limit INTEGER NOT NULL,
+          window_total INTEGER NOT NULL DEFAULT 0,
+          processed_count INTEGER NOT NULL DEFAULT 0,
+          window_head_updated_at TEXT NOT NULL DEFAULT '',
+          window_head_filepath TEXT NOT NULL DEFAULT '',
+          window_tail_updated_at TEXT NOT NULL DEFAULT '',
+          window_tail_filepath TEXT NOT NULL DEFAULT '',
+          last_processed_updated_at TEXT NOT NULL DEFAULT '',
+          last_processed_filepath TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
     _migrate_docs_if_needed(conn)
     _migrate_photos_if_needed(conn)
 
@@ -1069,6 +1100,10 @@ def ensure_db(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mail_attachment_sync_state_account "
         "ON mail_attachment_sync_state(account_email)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_photo_backfill_sync_state_updated_at "
+        "ON photo_backfill_sync_state(updated_at)"
     )
 
     conn.execute(
@@ -1294,6 +1329,189 @@ def _checkpoint_mail_sync_cursor(
     conn.commit()
     conn.execute("BEGIN")
     return 0
+
+
+def _photo_backfill_state_key(source_selection: str) -> str:
+    selected = str(source_selection or "all").strip().lower()
+    if selected not in {"all", "mail", "photos"}:
+        return "all"
+    return selected
+
+
+def _photo_backfill_pending_predicate() -> str:
+    return """
+        (
+               COALESCE(TRIM(category_primary), '') = ''
+            OR COALESCE(TRIM(taxonomy), '') = ''
+            OR COALESCE(TRIM(caption), '') = ''
+            OR (
+                (
+                  LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
+                  OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
+                )
+                AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
+              )
+            OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+        )
+    """
+
+
+def _photo_backfill_window_upper_bound_clause(updated_at: str, filepath: str) -> tuple[str, tuple[Any, ...]]:
+    return (
+        "AND (COALESCE(updated_at, '') < ? OR (COALESCE(updated_at, '') = ? AND filepath <= ?))",
+        (updated_at, updated_at, filepath),
+    )
+
+
+def _photo_backfill_window_lower_bound_clause(updated_at: str, filepath: str) -> tuple[str, tuple[Any, ...]]:
+    return (
+        "AND (COALESCE(updated_at, '') > ? OR (COALESCE(updated_at, '') = ? AND filepath >= ?))",
+        (updated_at, updated_at, filepath),
+    )
+
+
+def _photo_backfill_after_cursor_clause(updated_at: str, filepath: str) -> tuple[str, tuple[Any, ...]]:
+    return (
+        "AND (COALESCE(updated_at, '') < ? OR (COALESCE(updated_at, '') = ? AND filepath < ?))",
+        (updated_at, updated_at, filepath),
+    )
+
+
+def _photo_backfill_rows(
+    conn: sqlite3.Connection,
+    *,
+    source_selection: str,
+    limit: int,
+    window_head: tuple[str, str] | None = None,
+    window_tail: tuple[str, str] | None = None,
+    after_cursor: tuple[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    source_sql, source_params = _photo_backfill_source_clause(source_selection)
+    query = f"""
+        SELECT filepath, source, COALESCE(updated_at, '')
+        FROM photos_registry
+        WHERE {_photo_backfill_pending_predicate()}
+          {source_sql}
+    """
+    params: list[Any] = list(source_params)
+    if window_head is not None and window_head != ("", ""):
+        bound_sql, bound_params = _photo_backfill_window_upper_bound_clause(window_head[0], window_head[1])
+        query += f"\n          {bound_sql}"
+        params.extend(bound_params)
+    if window_tail is not None and window_tail != ("", ""):
+        bound_sql, bound_params = _photo_backfill_window_lower_bound_clause(window_tail[0], window_tail[1])
+        query += f"\n          {bound_sql}"
+        params.extend(bound_params)
+    if after_cursor is not None and after_cursor != ("", ""):
+        bound_sql, bound_params = _photo_backfill_after_cursor_clause(after_cursor[0], after_cursor[1])
+        query += f"\n          {bound_sql}"
+        params.extend(bound_params)
+    query += "\n        ORDER BY COALESCE(updated_at, '') DESC, filepath DESC"
+    if limit >= 0:
+        query += "\n        LIMIT ?"
+        params.append(int(limit))
+    return [
+        (str(row[0] or ""), str(row[1] or ""), str(row[2] or ""))
+        for row in conn.execute(query, tuple(params)).fetchall()
+    ]
+
+
+def _photo_backfill_sync_state(
+    conn: sqlite3.Connection,
+    *,
+    source_selection: str,
+) -> PhotoBackfillSyncState | None:
+    row = conn.execute(
+        """
+        SELECT
+          source_selection,
+          row_limit,
+          window_total,
+          processed_count,
+          window_head_updated_at,
+          window_head_filepath,
+          window_tail_updated_at,
+          window_tail_filepath,
+          last_processed_updated_at,
+          last_processed_filepath
+        FROM photo_backfill_sync_state
+        WHERE source_selection = ?
+        """,
+        (_photo_backfill_state_key(source_selection),),
+    ).fetchone()
+    if row is None:
+        return None
+    return PhotoBackfillSyncState(
+        source_selection=str(row[0] or ""),
+        row_limit=int(row[1] or 0),
+        window_total=int(row[2] or 0),
+        processed_count=int(row[3] or 0),
+        window_head_updated_at=str(row[4] or ""),
+        window_head_filepath=str(row[5] or ""),
+        window_tail_updated_at=str(row[6] or ""),
+        window_tail_filepath=str(row[7] or ""),
+        last_processed_updated_at=str(row[8] or ""),
+        last_processed_filepath=str(row[9] or ""),
+    )
+
+
+def _store_photo_backfill_sync_state(
+    conn: sqlite3.Connection,
+    *,
+    state: PhotoBackfillSyncState,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO photo_backfill_sync_state (
+          source_selection,
+          row_limit,
+          window_total,
+          processed_count,
+          window_head_updated_at,
+          window_head_filepath,
+          window_tail_updated_at,
+          window_tail_filepath,
+          last_processed_updated_at,
+          last_processed_filepath,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_selection) DO UPDATE SET
+          row_limit=excluded.row_limit,
+          window_total=excluded.window_total,
+          processed_count=excluded.processed_count,
+          window_head_updated_at=excluded.window_head_updated_at,
+          window_head_filepath=excluded.window_head_filepath,
+          window_tail_updated_at=excluded.window_tail_updated_at,
+          window_tail_filepath=excluded.window_tail_filepath,
+          last_processed_updated_at=excluded.last_processed_updated_at,
+          last_processed_filepath=excluded.last_processed_filepath,
+          updated_at=excluded.updated_at
+        """,
+        (
+            state.source_selection,
+            state.row_limit,
+            state.window_total,
+            state.processed_count,
+            state.window_head_updated_at,
+            state.window_head_filepath,
+            state.window_tail_updated_at,
+            state.window_tail_filepath,
+            state.last_processed_updated_at,
+            state.last_processed_filepath,
+            now_iso(),
+        ),
+    )
+
+
+def _clear_photo_backfill_sync_state(
+    conn: sqlite3.Connection,
+    *,
+    source_selection: str,
+) -> None:
+    conn.execute(
+        "DELETE FROM photo_backfill_sync_state WHERE source_selection = ?",
+        (_photo_backfill_state_key(source_selection),),
+    )
 
 
 def _material_updated_at_sql(*, import_summary: bool) -> str:
@@ -4455,77 +4673,74 @@ def backfill_missing_photo_analysis(
     if limit == 0 or photo_client is None or not photo_client.cfg.enabled:
         return 0, 0
 
-    source_sql, source_params = _photo_backfill_source_clause(source_selection)
-    if limit < 0:
-        rows = conn.execute(
-            f"""
-            SELECT filepath, source
-            FROM photos_registry
-            WHERE (
-                   COALESCE(TRIM(category_primary), '') = ''
-                OR COALESCE(TRIM(taxonomy), '') = ''
-                OR COALESCE(TRIM(caption), '') = ''
-                OR (
-                    (
-                      LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
-                      OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
-                    )
-                    AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
-                  )
-                OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
+    selected_source = _photo_backfill_state_key(source_selection)
+    state = _photo_backfill_sync_state(conn, source_selection=selected_source)
+    if state is not None and state.row_limit != int(limit):
+        _clear_photo_backfill_sync_state(conn, source_selection=selected_source)
+        conn.commit()
+        state = None
+
+    if state is None:
+        rows = _photo_backfill_rows(
+            conn,
+            source_selection=selected_source,
+            limit=limit,
+        )
+        if rows:
+            state = PhotoBackfillSyncState(
+                source_selection=selected_source,
+                row_limit=int(limit),
+                window_total=len(rows),
+                processed_count=0,
+                window_head_updated_at=rows[0][2],
+                window_head_filepath=rows[0][0],
+                window_tail_updated_at=rows[-1][2],
+                window_tail_filepath=rows[-1][0],
+                last_processed_updated_at="",
+                last_processed_filepath="",
             )
-              {source_sql}
-            ORDER BY updated_at DESC
-            """,
-            source_params,
-        ).fetchall()
+            _store_photo_backfill_sync_state(conn, state=state)
+            conn.commit()
     else:
-        rows = conn.execute(
-            f"""
-            SELECT filepath, source
-            FROM photos_registry
-            WHERE (
-                   COALESCE(TRIM(category_primary), '') = ''
-                OR COALESCE(TRIM(taxonomy), '') = ''
-                OR COALESCE(TRIM(caption), '') = ''
-                OR (
-                    (
-                      LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
-                      OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
-                    )
-                    AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
-                  )
-                OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
-            )
-              {source_sql}
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (*source_params, int(limit)),
-        ).fetchall()
+        rows = _photo_backfill_rows(
+            conn,
+            source_selection=selected_source,
+            limit=-1,
+            window_head=(state.window_head_updated_at, state.window_head_filepath),
+            window_tail=(state.window_tail_updated_at, state.window_tail_filepath),
+            after_cursor=(state.last_processed_updated_at, state.last_processed_filepath),
+        )
 
     updated = 0
     failed = 0
     started_mono = time.monotonic()
     last_emit_mono = started_mono
-    total_rows = len(rows)
+    total_rows = state.window_total if state is not None else len(rows)
+    stage_done = state.processed_count if state is not None else 0
     last_emit_mono = emit_stage_progress(
         stage="6/6.photo-backfill",
-        stage_done=0,
+        stage_done=stage_done,
         stage_total=total_rows,
-        action="start",
+        action="resume" if stage_done > 0 else "start",
         started_mono=started_mono,
         last_emit_mono=last_emit_mono,
         verbose=verbose,
         force=True,
     )
-    for idx, (filepath, source) in enumerate(rows, start=1):
+    if state is None or not rows:
+        if state is not None:
+            _clear_photo_backfill_sync_state(conn, source_selection=selected_source)
+            conn.commit()
+        return updated, failed
+
+    for row_offset, (filepath, source, row_updated_at) in enumerate(rows, start=1):
         if should_stop(deadline, budget):
             break
         if budget is not None and not budget.consume():
             break
         action = "checked"
         registry_key = str(filepath or "")
+        current_done = stage_done + row_offset
         try:
             p, resolve_status = _resolve_photo_registry_input_path(
                 conn,
@@ -4534,40 +4749,57 @@ def backfill_missing_photo_analysis(
             if p is None:
                 failed += 1
                 action = resolve_status
-                continue
-            changed = index_photo_file(
-                conn,
-                p,
-                str(source or "backfill/photos"),
-                dry_run=False,
-                photo_client=photo_client,
-                force_analyze=True,
-                registry_filepath=registry_key,
-            )
-            if changed:
-                conn.commit()
-                updated += 1
-                action = "updated"
-            row = conn.execute(
-                "SELECT COALESCE(TRIM(analyzer_status), '') FROM photos_registry WHERE filepath = ?",
-                (registry_key,),
-            ).fetchone()
-            st = (row[0] if row else "")
-            if st == "error":
-                failed += 1
-                action = "updated-error"
+            else:
+                changed = index_photo_file(
+                    conn,
+                    p,
+                    str(source or "backfill/photos"),
+                    dry_run=False,
+                    photo_client=photo_client,
+                    force_analyze=True,
+                    registry_filepath=registry_key,
+                )
+                if changed:
+                    updated += 1
+                    action = "updated"
+                row = conn.execute(
+                    "SELECT COALESCE(TRIM(analyzer_status), '') FROM photos_registry WHERE filepath = ?",
+                    (registry_key,),
+                ).fetchone()
+                st = (row[0] if row else "")
+                if st == "error":
+                    failed += 1
+                    action = "updated-error"
         except Exception:
             failed += 1
             action = "error"
+        state = PhotoBackfillSyncState(
+            source_selection=selected_source,
+            row_limit=int(limit),
+            window_total=total_rows,
+            processed_count=current_done,
+            window_head_updated_at=state.window_head_updated_at,
+            window_head_filepath=state.window_head_filepath,
+            window_tail_updated_at=state.window_tail_updated_at,
+            window_tail_filepath=state.window_tail_filepath,
+            last_processed_updated_at=str(row_updated_at or ""),
+            last_processed_filepath=registry_key,
+        )
+        _store_photo_backfill_sync_state(conn, state=state)
+        conn.commit()
         last_emit_mono = emit_stage_progress(
             stage="6/6.photo-backfill",
-            stage_done=idx,
+            stage_done=current_done,
             stage_total=total_rows,
             action=action,
             started_mono=started_mono,
             last_emit_mono=last_emit_mono,
             verbose=verbose,
         )
+
+    if state.processed_count >= total_rows:
+        _clear_photo_backfill_sync_state(conn, source_selection=selected_source)
+        conn.commit()
 
     return updated, failed
 
@@ -4621,7 +4853,7 @@ def _resolve_photo_registry_input_path(
 
 
 def _photo_backfill_source_clause(source_selection: str) -> tuple[str, tuple[Any, ...]]:
-    selected = str(source_selection or "all").strip().lower()
+    selected = _photo_backfill_state_key(source_selection)
     if selected == "mail":
         return "AND COALESCE(source, '') = ?", (MAIL_ATTACHMENT_SOURCE,)
     if selected == "photos":
@@ -4660,19 +4892,7 @@ def count_pending_photo_backfill(conn: sqlite3.Connection, limit: int, *, source
             f"""
             SELECT COUNT(*)
             FROM photos_registry
-            WHERE (
-                   COALESCE(TRIM(category_primary), '') = ''
-                OR COALESCE(TRIM(taxonomy), '') = ''
-                OR COALESCE(TRIM(caption), '') = ''
-                OR (
-                    (
-                      LOWER(COALESCE(TRIM(category_primary), '')) IN ('document', 'receipt')
-                      OR LOWER(COALESCE(TRIM(taxonomy), '')) = 'docs'
-                    )
-                    AND LOWER(COALESCE(TRIM(ocr_status), '')) IN ('', 'empty')
-                  )
-                OR COALESCE(TRIM(analyzer_status), '') IN ('', 'error', 'disabled')
-            )
+            WHERE {_photo_backfill_pending_predicate()}
               {source_sql}
             """,
             source_params,

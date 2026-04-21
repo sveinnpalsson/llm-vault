@@ -13,6 +13,7 @@ from vault_registry_sync import (
     PhotoAnalysisResult,
     SummaryConfig,
     SummaryResult,
+    WorkBudget,
     _resolve_pdf_parse_config,
     _resolve_photo_analysis_config,
     backfill_missing_photo_analysis,
@@ -61,6 +62,23 @@ class _DummyPhotoClient:
 
     def analyze(self, _path: Path) -> PhotoAnalysisResult:
         return self._result
+
+
+class _CountingPhotoClient:
+    def __init__(self, results_by_path: dict[str, PhotoAnalysisResult]) -> None:
+        self.cfg = PhotoAnalysisConfig(
+            enabled=True,
+            analyze_url=DEFAULT_LOCAL_PHOTO_ANALYSIS_URL,
+            timeout_seconds=30,
+            force=False,
+        )
+        self._results_by_path = results_by_path
+        self.calls: list[str] = []
+
+    def analyze(self, path: Path) -> PhotoAnalysisResult:
+        key = str(path)
+        self.calls.append(key)
+        return self._results_by_path[key]
 
 
 def _summary_cfg(enabled: bool = True) -> SummaryConfig:
@@ -587,6 +605,151 @@ def test_backfill_missing_photo_analysis_retries_document_like_empty_ocr(tmp_pat
         assert row[0] == "tracking 1234"
         assert row[1] == "ok"
         assert row[2] == "analyzer:text_raw"
+    finally:
+        conn.close()
+
+
+def test_backfill_missing_photo_analysis_resumes_same_window_without_rechecking_processed_rows(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state" / "vault_registry.db"
+    conn = connect_vault_db(db_path, ensure_parent=True)
+    try:
+        ensure_db(conn)
+        photo_paths = [
+            tmp_path / "photo-a.jpg",
+            tmp_path / "photo-b.jpg",
+            tmp_path / "photo-c.jpg",
+        ]
+        seeded_client = _DummyPhotoClient()
+        for photo_path in photo_paths:
+            photo_path.write_bytes(b"fake-jpeg-bytes")
+            changed = index_photo_file(
+                conn,
+                photo_path,
+                "tests/photos",
+                dry_run=False,
+                photo_client=seeded_client,
+                force_analyze=True,
+            )
+            assert changed is True
+        conn.commit()
+
+        updated_at_by_path = {
+            str(photo_paths[0]): "2026-04-20T10:00:00+00:00",
+            str(photo_paths[1]): "2026-04-20T09:00:00+00:00",
+            str(photo_paths[2]): "2026-04-20T08:00:00+00:00",
+        }
+        for registry_path, updated_at in updated_at_by_path.items():
+            conn.execute(
+                """
+                UPDATE photos_registry
+                SET caption = '',
+                    analyzer_status = '',
+                    analyzer_error = '',
+                    analyzer_raw = '',
+                    analyzer_model = '',
+                    category_primary = '',
+                    category_secondary = '',
+                    taxonomy = '',
+                    ocr_text = '',
+                    ocr_status = '',
+                    ocr_source = '',
+                    updated_at = ?
+                WHERE filepath = ?
+                """,
+                (updated_at, registry_path),
+            )
+        conn.commit()
+
+        retry_later = PhotoAnalysisResult(
+            status="error",
+            route_kind="doc",
+            taxonomy="",
+            caption="",
+            category_primary="",
+            category_secondary="",
+            analyzer_model="test-photo-model",
+            analyzer_error="still unavailable",
+            analyzer_raw="",
+            ocr_text="",
+        )
+        repaired = PhotoAnalysisResult(
+            status="ok",
+            route_kind="doc",
+            taxonomy="docs",
+            caption="shipping label on package",
+            category_primary="document",
+            category_secondary="label",
+            analyzer_model="test-photo-model",
+            analyzer_error="",
+            analyzer_raw='{"caption":"shipping label on package","text_raw":"tracking 1234"}',
+            ocr_text="tracking 1234",
+        )
+        client = _CountingPhotoClient(
+            {
+                str(photo_paths[0]): retry_later,
+                str(photo_paths[1]): repaired,
+                str(photo_paths[2]): repaired,
+            }
+        )
+
+        updated, failed = backfill_missing_photo_analysis(
+            conn,
+            photo_client=client,
+            limit=-1,
+            deadline=float("inf"),
+            verbose=False,
+            budget=WorkBudget(remaining_items=2),
+        )
+
+        assert updated == 2
+        assert failed == 1
+        assert client.calls == [str(photo_paths[0]), str(photo_paths[1])]
+
+        state_row = conn.execute(
+            """
+            SELECT processed_count, window_total, last_processed_filepath
+            FROM photo_backfill_sync_state
+            WHERE source_selection = 'all'
+            """
+        ).fetchone()
+        assert tuple(state_row) == (2, 3, str(photo_paths[1]))
+
+        updated, failed = backfill_missing_photo_analysis(
+            conn,
+            photo_client=client,
+            limit=-1,
+            deadline=float("inf"),
+            verbose=False,
+        )
+
+        assert updated == 1
+        assert failed == 0
+        assert client.calls == [str(photo_paths[0]), str(photo_paths[1]), str(photo_paths[2])]
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM photo_backfill_sync_state WHERE source_selection = 'all'"
+            ).fetchone()[0]
+            == 0
+        )
+
+        updated, failed = backfill_missing_photo_analysis(
+            conn,
+            photo_client=client,
+            limit=-1,
+            deadline=float("inf"),
+            verbose=False,
+        )
+
+        assert updated == 0
+        assert failed == 1
+        assert client.calls == [
+            str(photo_paths[0]),
+            str(photo_paths[1]),
+            str(photo_paths[2]),
+            str(photo_paths[0]),
+        ]
     finally:
         conn.close()
 
