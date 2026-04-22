@@ -2,7 +2,7 @@
 
 `llm-vault` includes a repo-local OpenClaw plugin package at `plugins/llm-vault-openclaw/`.
 
-Use this document for the exact contract: safe boundary, config placement, command surface, and autonomous tool surface.
+Use this document for the exact contract: routing boundary, config placement, command surface, and autonomous tool surface.
 
 ## Implemented Surface
 
@@ -12,7 +12,7 @@ The plugin package contains:
 - `package.json` that points OpenClaw at `index.js`
 - `plugin-config.example.json` for the inner runtime payload
 - a manual command surface for `/vault ...`
-- an agent tool surface for `llm_vault_status` and `llm_vault_search`
+- an agent tool surface for `llm_vault_status`, `llm_vault_search`, and `llm_vault_search_redacted`
 
 This is a repo-local plugin package, not a published standalone release.
 
@@ -23,8 +23,9 @@ This integration keeps the boundary narrow:
 - `vault-ops` remains operator-only
 - the plugin shells only into `vault-agent`
 - the tool surface maps only to `vault-agent`
-- both `/vault search` and `/vault search-redacted` are forced through redacted search
-- the agent tool surface exposes only status and redacted search
+- `/vault search` maps to `vault-agent search`
+- `/vault search-redacted` maps to `vault-agent search-redacted`
+- the agent tool surface exposes status plus explicit full/redacted search tools
 
 `answer-redacted` remains out of scope for this plugin.
 
@@ -51,8 +52,9 @@ Autonomous use should go through these exact tool names:
 
 - `llm_vault_status`
 - `llm_vault_search`
+- `llm_vault_search_redacted`
 
-`llm_vault_search` accepts:
+`llm_vault_search` and `llm_vault_search_redacted` accept:
 
 - `query`
 - `source`
@@ -66,7 +68,7 @@ Both tools call only `vault-agent`.
 
 `timeoutSeconds` is enforced by the plugin wrapper's child-process timeout. The plugin does not pass timeout flags into `vault-agent`.
 
-`llm_vault_search` currently runs redacted-only and safe by default.
+`llm_vault_search` is the unsuffixed full-search path. `llm_vault_search_redacted` is the redacted variant.
 
 ## Config Placement
 
@@ -137,7 +139,8 @@ For an allowlisted agent, add the llm-vault tools explicitly:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search"
+            "llm_vault_search",
+            "llm_vault_search_redacted"
           ]
         }
       }

@@ -321,16 +321,16 @@ def _build_status_cmd(args: argparse.Namespace) -> list[str]:
     return cmd
 
 
-def _build_search_cmd(args: argparse.Namespace) -> list[str]:
+def _build_search_cmd(args: argparse.Namespace, *, clearance: str, search_level: str) -> list[str]:
     cmd = [str(DEFAULT_VAULT_OPS)]
     cmd += [
         "search",
         args.query,
         "--json",
         "--clearance",
-        "redacted",
+        clearance,
         "--search-level",
-        "redacted",
+        search_level,
         "--top-k",
         str(args.top_k),
         "--source",
@@ -372,8 +372,7 @@ def cmd_status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return 0, _success_payload(operation, data=_agent_status_from_backend(payload))
 
 
-def cmd_search_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    operation = "search_redacted"
+def _cmd_search(args: argparse.Namespace, *, operation: str, clearance: str, search_level: str) -> tuple[int, dict[str, Any]]:
     request = {
         "query": args.query,
         "source": args.source,
@@ -383,9 +382,13 @@ def cmd_search_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         "taxonomy": args.taxonomy,
         "category_primary": args.category_primary,
     }
-    enforced = {"clearance": "redacted", "search_level": "redacted"}
+    enforced = {"clearance": clearance, "search_level": search_level}
     try:
-        payload, run = _run_json(_build_search_cmd(args), cwd=ROOT, timeout_seconds=args.timeout_seconds)
+        payload, run = _run_json(
+            _build_search_cmd(args, clearance=clearance, search_level=search_level),
+            cwd=ROOT,
+            timeout_seconds=args.timeout_seconds,
+        )
     except FileNotFoundError:
         return 2, _error_payload(operation, "backend_missing", "vault-ops executable was not found")
     except subprocess.TimeoutExpired:
@@ -412,6 +415,14 @@ def cmd_search_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         )
 
     return 0, _success_payload(operation, data=payload, request=request, enforced=enforced)
+
+
+def cmd_search(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return _cmd_search(args, operation="search", clearance="full", search_level="auto")
+
+
+def cmd_search_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return _cmd_search(args, operation="search_redacted", clearance="redacted", search_level="redacted")
 
 
 def cmd_answer_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -451,12 +462,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = subparsers.add_parser("status", help="read-only vault readiness")
     p_status.set_defaults(handler=cmd_status)
 
-    p_search = subparsers.add_parser(
+    p_search = subparsers.add_parser("search", parents=[search_common], help="full-clearance search")
+    p_search.set_defaults(handler=cmd_search)
+
+    p_search_redacted = subparsers.add_parser(
         "search-redacted",
         parents=[search_common],
         help="redacted search with enforced redacted retrieval",
     )
-    p_search.set_defaults(handler=cmd_search_redacted)
+    p_search_redacted.set_defaults(handler=cmd_search_redacted)
 
     p_answer = subparsers.add_parser(
         "answer-redacted",

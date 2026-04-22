@@ -9,7 +9,7 @@ Privacy-first local vault for personal documents, photos, and mail.
 `llm-vault` builds an encrypted local registry and vector index over local content, then exposes:
 
 - `vault-ops` for operator workflows such as indexing, repair, upgrade, and maintenance
-- `vault-agent` for constrained agent-safe status and redacted search
+- `vault-agent` for status plus explicit full/redacted search routing
 - a repo-local OpenClaw plugin package that wraps only the `vault-agent` safe surface
 
 ![llm-vault architecture overview](assets/llm-vault-arch.png)
@@ -35,15 +35,15 @@ A public-facing redaction results page lives under [`eval/redaction/`](eval/reda
 `llm-vault` has two interfaces:
 
 - `vault-ops` is the operator interface. Use it for indexing, repair, upgrade, maintenance, and other unrestricted admin work.
-- `vault-agent` is the safe agent interface. Use it for status checks and redacted search only.
+- `vault-agent` exposes status plus explicit `search` and `search-redacted` paths.
 
 The OpenClaw plugin is just the OpenClaw wrapper around `vault-agent`.
-It exists so agents inside OpenClaw can use the same redacted-only retrieval surface without being given direct `vault-ops` access.
+It exists so agents inside OpenClaw can use an explicit wrapper surface without being given direct `vault-ops` access.
 
 That means the boundary is:
 
 - `vault-ops` is operator-only
-- `vault-agent` is the safe redacted interface
+- `vault-agent` is the wrapper interface for explicit status/search routing
 - the OpenClaw plugin only exposes that same `vault-agent` surface inside OpenClaw
 
 So an autonomous agent should use `vault-agent` or the OpenClaw plugin tools, and should not be given direct `vault-ops` access.
@@ -202,9 +202,9 @@ The repo-local plugin package lives at [`plugins/llm-vault-openclaw`](plugins/ll
 OpenClaw has two separate surfaces here:
 
 - command surface: `/vault status`, `/vault search ...`, `/vault search-redacted ...`
-- tool surface: `llm_vault_status`, `llm_vault_search`
+- tool surface: `llm_vault_status`, `llm_vault_search`, `llm_vault_search_redacted`
 
-The tool surface is the intended autonomous path. `llm_vault_search` is redacted-only and safe by default. The slash command stays available for manual use.
+The tool surface is the intended autonomous path. `llm_vault_search` is the unsuffixed full-search path and `llm_vault_search_redacted` is the redacted variant. The slash command stays available for manual use.
 
 ### `openclaw.json`
 
@@ -250,7 +250,8 @@ No extra agent block is needed if the target agent already has open tool access.
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search"
+            "llm_vault_search",
+            "llm_vault_search_redacted"
           ]
         }
       }

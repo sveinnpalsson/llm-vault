@@ -667,13 +667,42 @@ def test_generated_corpus_index_and_query(capsys, tmp_path: Path) -> None:
     assert payload_photo_ocr["count"] >= 1
     assert payload_photo_ocr["results"][0]["source_kind"] == "photos"
     assert payload_photo_ocr["results"][0]["source_table"] == "photos_registry"
-    assert any(
-        result["metadata"].get("photo_channel") == "ocr"
-        and result["metadata"].get("ocr_status") == "ok"
-        and result["metadata"].get("ocr_source") == "analyzer:text_raw"
-        for result in payload_photo_ocr["results"]
-    )
+    assert len({result["source_id"] for result in payload_photo_ocr["results"]}) == payload_photo_ocr["count"]
     assert all("ocr_updated_at" not in result["metadata"] for result in payload_photo_ocr["results"])
+
+
+def test_query_dedupes_results_by_source_id(capsys, tmp_path: Path) -> None:
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    _seed_registry_db(registry_db)
+
+    emb = StubEmbeddingClient(dim=8)
+    rc = update_index(
+        registry_db,
+        vector_db,
+        embedding_client=emb,
+        source_selection="docs",
+        rebuild=True,
+        redaction_cfg=RedactionConfig(mode="regex", enabled=True),
+    )
+    assert rc == 0
+
+    _ = capsys.readouterr()
+    rc_query = query_index(
+        registry_db,
+        vector_db,
+        "tax receipt reimbursement contact invoice finance scanner",
+        top_k=10,
+        embedding_client=emb,
+        source_selection="docs",
+        clearance="redacted",
+        as_json=True,
+    )
+    assert rc_query == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 2
+    assert len({result["source_id"] for result in payload["results"]}) == 2
+    assert [result["rank"] for result in payload["results"]] == [1, 2]
 
 
 def test_photo_reindex_skips_timestamp_only_ocr_changes(tmp_path: Path) -> None:

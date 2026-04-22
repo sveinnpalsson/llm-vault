@@ -46,7 +46,7 @@ def test_openclaw_plugin_manifest_declares_llm_vault_plugin() -> None:
     assert payload == {
         "id": "llm-vault",
         "name": "llm-vault",
-        "description": "OpenClaw plugin scaffold for safe redacted llm-vault access.",
+        "description": "OpenClaw plugin scaffold for explicit llm-vault status and search access.",
         "configSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -103,6 +103,7 @@ def test_openclaw_plugin_docs_are_honest_about_scope() -> None:
     assert "plugins.entries.llm-vault.config" in content
     assert "llm_vault_status" in content
     assert "llm_vault_search" in content
+    assert "llm_vault_search_redacted" in content
     assert "plugin-config.example.json" in content
     assert "manual and operator-run" in content
 
@@ -119,6 +120,7 @@ def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enab
     assert "plugins.entries.llm-vault.config" in readme
     assert "llm_vault_status" in readme
     assert "llm_vault_search" in readme
+    assert "llm_vault_search_redacted" in readme
     assert example == {
         "repoRoot": "/absolute/path/to/llm-vault",
         "vaultAgentPath": "/absolute/path/to/llm-vault/vault-agent",
@@ -139,6 +141,7 @@ def test_openclaw_agent_setup_doc_covers_required_inputs_and_plugin_stub() -> No
     assert "plugins.load.paths" in content
     assert "plugins.entries.llm-vault.config" in content
     assert "llm_vault_search" in content
+    assert "llm_vault_search_redacted" in content
     assert "manual and operator-run" in content
 
 
@@ -148,10 +151,12 @@ def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
     assert 'const COMMAND_NAME = "vault"' in content
     assert 'const TOOL_STATUS_NAME = "llm_vault_status"' in content
     assert 'const TOOL_SEARCH_NAME = "llm_vault_search"' in content
+    assert 'const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted"' in content
     assert "resolvePluginConfig(api.pluginConfig)" in content
     assert "ctx?.config" not in content
     assert 'api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME })' in content
     assert 'api.registerTool(createSearchTool(pluginConfig), { name: TOOL_SEARCH_NAME })' in content
+    assert 'api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME })' in content
     assert 'buildSearchRedactedArgs' in content
     assert "operator-only" in content
 
@@ -203,7 +208,7 @@ console.log(JSON.stringify({{
     assert payload["commands"] == [
         {
             "name": "vault",
-            "description": "Run safe llm-vault status and redacted search commands.",
+            "description": "Run llm-vault status and explicit full/redacted search commands.",
             "acceptsArgs": True,
             "hasHandler": True,
         }
@@ -211,7 +216,7 @@ console.log(JSON.stringify({{
     assert payload["tools"] == [
         {
             "name": "llm_vault_status",
-            "description": "Return llm-vault agent-safe status from vault-agent.",
+            "description": "Return llm-vault status from vault-agent.",
             "label": "Vault Status",
             "optionName": "llm_vault_status",
             "hasExecute": True,
@@ -220,9 +225,18 @@ console.log(JSON.stringify({{
         },
         {
             "name": "llm_vault_search",
-            "description": "Run llm-vault redacted search through vault-agent with narrow safe filters.",
+            "description": "Run llm-vault full search through vault-agent.",
             "label": "Vault Search",
             "optionName": "llm_vault_search",
+            "hasExecute": True,
+            "required": ["query"],
+            "parameterKeys": ["query", "source", "topK", "fromDate", "toDate", "taxonomy", "categoryPrimary"],
+        },
+        {
+            "name": "llm_vault_search_redacted",
+            "description": "Run llm-vault redacted search through vault-agent.",
+            "label": "Vault Search Redacted",
+            "optionName": "llm_vault_search_redacted",
             "hasExecute": True,
             "required": ["query"],
             "parameterKeys": ["query", "source", "topK", "fromDate", "toDate", "taxonomy", "categoryPrimary"],
@@ -362,13 +376,13 @@ console.log(JSON.stringify({{
     assert payload["timeoutOnlyOverride"] == expected
 
 
-def test_openclaw_plugin_search_parser_enforces_redacted_backend_and_safe_filters() -> None:
+def test_openclaw_plugin_search_parser_builds_full_and_redacted_backends() -> None:
     payload = _run_node_json(
         f"""
-import {{ buildSearchRedactedArgs, parseSearchArgs, tokenizeArgs }} from {json.dumps(PLUGIN_INDEX)};
+import {{ buildSearchFullArgs, buildSearchRedactedArgs, parseSearchArgs, tokenizeArgs }} from {json.dumps(PLUGIN_INDEX)};
 console.log(JSON.stringify({{
   tokens: tokenizeArgs('search --source docs --top-k 3 --from-date 2026-01-01 --taxonomy finance "tax receipt"'),
-  parsed: parseSearchArgs([
+  parsedFull: parseSearchArgs([
     "--source",
     "docs",
     "--top-k",
@@ -380,6 +394,25 @@ console.log(JSON.stringify({{
     "tax",
     "receipt",
   ]),
+  parsedRedacted: parseSearchArgs([
+    "--source",
+    "docs",
+    "--top-k",
+    "3",
+    "--from-date",
+    "2026-01-01",
+    "--taxonomy",
+    "finance",
+    "tax",
+    "receipt",
+  ], {{ redacted: true }}),
+  builtFull: buildSearchFullArgs({{
+    query: "tax receipt",
+    source: "docs",
+    topK: 3,
+    fromDate: "2026-01-01",
+    taxonomy: "finance",
+  }}),
   built: buildSearchRedactedArgs({{
     query: "tax receipt",
     source: "docs",
@@ -405,7 +438,19 @@ console.log(JSON.stringify({{
         "finance",
         "tax receipt",
     ]
-    assert payload["parsed"] == [
+    assert payload["parsedFull"] == [
+        "search",
+        "tax receipt",
+        "--source",
+        "docs",
+        "--top-k",
+        "3",
+        "--from-date",
+        "2026-01-01",
+        "--taxonomy",
+        "finance",
+    ]
+    assert payload["parsedRedacted"] == [
         "search-redacted",
         "tax receipt",
         "--source",
@@ -417,7 +462,8 @@ console.log(JSON.stringify({{
         "--taxonomy",
         "finance",
     ]
-    assert payload["built"] == payload["parsed"]
+    assert payload["builtFull"] == payload["parsedFull"]
+    assert payload["built"] == payload["parsedRedacted"]
 
 
 def test_openclaw_command_runtime_uses_explicit_plugin_config_payload(tmp_path: Path) -> None:
@@ -497,12 +543,17 @@ console.log(JSON.stringify(result));
     }
 
 
-def test_openclaw_tool_surface_executes_redacted_backend_only(tmp_path: Path) -> None:
+def test_openclaw_tool_surface_executes_full_and_redacted_backends(tmp_path: Path) -> None:
     fake_agent = _write_fake_vault_agent(tmp_path)
     payload = _run_node_json(
         f"""
-import {{ createSearchTool }} from {json.dumps(PLUGIN_INDEX)};
+import {{ createSearchRedactedTool, createSearchTool }} from {json.dumps(PLUGIN_INDEX)};
 const tool = createSearchTool({{
+  repoRoot: {json.dumps(str(tmp_path))},
+  vaultAgentPath: {json.dumps(str(fake_agent))},
+  timeoutSeconds: 19,
+}});
+const redactedTool = createSearchRedactedTool({{
   repoRoot: {json.dumps(str(tmp_path))},
   vaultAgentPath: {json.dumps(str(fake_agent))},
   timeoutSeconds: 19,
@@ -513,13 +564,32 @@ const result = await tool.execute("tool-call-1", {{
   topK: 3,
   taxonomy: "finance",
 }});
-console.log(JSON.stringify(result));
+const redacted = await redactedTool.execute("tool-call-2", {{
+  query: "tax receipt",
+  source: "docs",
+  topK: 3,
+  taxonomy: "finance",
+}});
+console.log(JSON.stringify({{ result, redacted }}));
 """
     )
     if not payload:
         return
 
-    assert payload["details"] == {
+    assert payload["result"]["details"] == {
+        "backendCommand": "search",
+        "forwarded": [
+            "search",
+            "tax receipt",
+            "--source",
+            "docs",
+            "--top-k",
+            "3",
+            "--taxonomy",
+            "finance",
+        ],
+    }
+    assert payload["redacted"]["details"] == {
         "backendCommand": "search-redacted",
         "forwarded": [
             "search-redacted",
@@ -532,9 +602,22 @@ console.log(JSON.stringify(result));
             "finance",
         ],
     }
-    assert len(payload["content"]) == 1
-    assert payload["content"][0]["type"] == "text"
-    assert json.loads(payload["content"][0]["text"]) == {
+    assert len(payload["result"]["content"]) == 1
+    assert payload["result"]["content"][0]["type"] == "text"
+    assert json.loads(payload["result"]["content"][0]["text"]) == {
+        "argv": [
+            "search",
+            "tax receipt",
+            "--source",
+            "docs",
+            "--top-k",
+            "3",
+            "--taxonomy",
+            "finance",
+        ],
+        "cwd": str(tmp_path),
+    }
+    assert json.loads(payload["redacted"]["content"][0]["text"]) == {
         "argv": [
             "search-redacted",
             "tax receipt",

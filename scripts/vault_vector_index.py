@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import array
 import hashlib
-import heapq
 import json
 import math
 import os
@@ -3102,7 +3101,7 @@ def query_index(
                     sql += f" AND source_table IN ({placeholders})"
                     params.extend(selected_tables)
 
-        heap: list[tuple[float, int, dict]] = []
+        best_by_source: dict[str, tuple[float, int, dict[str, Any]]] = {}
         seq = 0
         skipped_dim_mismatch = 0
         scanned = 0
@@ -3154,6 +3153,7 @@ def query_index(
                 skipped_dim_mismatch += 1
                 continue
             score = dot(q, v)
+            source_id = _stable_source_id(str(row["source_table"]), str(row["source_filepath"]))
             payload = {
                 "score": score,
                 "item_id": row["item_id"],
@@ -3168,12 +3168,11 @@ def query_index(
             }
             entry = (score, seq, payload)
             seq += 1
-            if len(heap) < top_k:
-                heapq.heappush(heap, entry)
-            else:
-                heapq.heappushpop(heap, entry)
+            existing = best_by_source.get(source_id)
+            if existing is None or score > existing[0]:
+                best_by_source[source_id] = entry
 
-        best = [item for _, _, item in sorted(heap, key=lambda x: x[0], reverse=True)]
+        best = [item for _, _, item in sorted(best_by_source.values(), key=lambda x: x[0], reverse=True)[:top_k]]
         if not best:
             if skipped_dim_mismatch:
                 msg = (

@@ -13,7 +13,7 @@ Use this document when the goal is: install from a checkout, wire OpenClaw to th
 Keep the surfaces separate:
 
 - `vault-ops`: operator-only; indexing, repair, upgrade, migration, unrestricted maintenance
-- `vault-agent`: agent-safe; status and redacted search
+- `vault-agent`: status plus explicit `search` and `search-redacted`
 - `plugins/llm-vault-openclaw`: OpenClaw wrapper around `vault-agent` only
 
 Do not wire OpenClaw directly to `vault-ops`.
@@ -131,7 +131,7 @@ Expected boundary:
 
 - `vault-agent` does not accept a config override
 - `vault-agent` does not allow a clearance override
-- search remains redacted-only
+- search routing is explicit: `search` is unsuffixed and `search-redacted` is the redacted variant
 
 ## Step 5: Wire The OpenClaw Plugin
 
@@ -197,6 +197,7 @@ Tool surface:
 
 - `llm_vault_status`
 - `llm_vault_search`
+- `llm_vault_search_redacted`
 
 If the target agent uses a tool allowlist, add:
 
@@ -209,7 +210,8 @@ If the target agent uses a tool allowlist, add:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search"
+            "llm_vault_search",
+            "llm_vault_search_redacted"
           ]
         }
       }
@@ -225,9 +227,9 @@ If the agent already uses `tools.allow`, add those same names there instead.
 From OpenClaw, confirm:
 
 - `/vault status` works
-- `/vault search ...` stays backed by redacted search
+- `/vault search ...` runs the unsuffixed full-search path
 - `llm_vault_status` is available to the agent
-- `llm_vault_search` is available to the agent
+- `llm_vault_search` and `llm_vault_search_redacted` are available to the agent
 
 Config contract:
 

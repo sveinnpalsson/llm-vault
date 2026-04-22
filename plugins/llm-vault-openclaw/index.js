@@ -15,14 +15,16 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const DEFAULT_VAULT_AGENT_PATH = "./vault-agent";
 const PLUGIN_ID = "llm-vault";
 const PLUGIN_NAME = "llm-vault";
-const PLUGIN_DESCRIPTION = "Safe llm-vault OpenClaw plugin scaffold backed by vault-agent.";
+const PLUGIN_DESCRIPTION = "llm-vault OpenClaw plugin scaffold backed by vault-agent.";
 const COMMAND_NAME = "vault";
-const COMMAND_DESCRIPTION = "Run safe llm-vault status and redacted search commands.";
+const COMMAND_DESCRIPTION = "Run llm-vault status and explicit full/redacted search commands.";
 const TOOL_STATUS_NAME = "llm_vault_status";
+const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted";
 const TOOL_SEARCH_NAME = "llm_vault_search";
-const TOOL_STATUS_DESCRIPTION = "Return llm-vault agent-safe status from vault-agent.";
-const TOOL_SEARCH_DESCRIPTION =
-  "Run llm-vault redacted search through vault-agent with narrow safe filters.";
+const TOOL_STATUS_DESCRIPTION = "Return llm-vault status from vault-agent.";
+const TOOL_SEARCH_DESCRIPTION = "Run llm-vault full search through vault-agent.";
+const TOOL_SEARCH_REDACTED_DESCRIPTION =
+  "Run llm-vault redacted search through vault-agent.";
 const PLUGIN_CONFIG_KEYS = new Set(["repoRoot", "vaultAgentPath", "timeoutSeconds"]);
 const SAFE_SURFACE = Object.freeze([
   {
@@ -41,8 +43,9 @@ const SAFE_SURFACE = Object.freeze([
   },
 ]);
 const SAFE_BOUNDARY_LINES = Object.freeze([
-  "This plugin only exposes the agent-safe vault-agent surface.",
+  "This plugin shells only into vault-agent.",
   "Raw vault-ops update/repair/full-clearance workflows remain operator-only.",
+  "Search clearance is explicit in the command/tool name.",
 ]);
 const STATUS_TOOL_PARAMETERS = Object.freeze({
   type: "object",
@@ -57,7 +60,7 @@ const SEARCH_TOOL_PARAMETERS = Object.freeze({
     query: {
       type: "string",
       minLength: 1,
-      description: "Redacted search query text.",
+      description: "Search query text.",
     },
     source: {
       type: "string",
@@ -298,7 +301,7 @@ function parseSearchFilters(tokens) {
   };
 }
 
-function buildSearchRedactedArgs(options) {
+function buildSearchArgs(options, { redacted = false } = {}) {
   const query = optionalConfigString(options?.query, "query");
   if (!query) {
     throw new Error("query must be a non-empty string.");
@@ -323,7 +326,7 @@ function buildSearchRedactedArgs(options) {
     ? null
     : optionalConfigString(options.categoryPrimary, "categoryPrimary");
 
-  const args = ["search-redacted", query, "--source", source, "--top-k", String(topK)];
+  const args = [redacted ? "search-redacted" : "search", query, "--source", source, "--top-k", String(topK)];
   if (fromDate) {
     args.push("--from-date", fromDate);
   }
@@ -339,8 +342,16 @@ function buildSearchRedactedArgs(options) {
   return args;
 }
 
-function parseSearchArgs(tokens) {
-  return buildSearchRedactedArgs(parseSearchFilters(tokens));
+function buildSearchRedactedArgs(options) {
+  return buildSearchArgs(options, { redacted: true });
+}
+
+function buildSearchFullArgs(options) {
+  return buildSearchArgs(options, { redacted: false });
+}
+
+function parseSearchArgs(tokens, { redacted = false } = {}) {
+  return buildSearchArgs(parseSearchFilters(tokens), { redacted });
 }
 
 function parseTimeoutSeconds(raw) {
@@ -431,6 +442,10 @@ async function runSearchRedacted(options, rawConfig) {
   return runVaultAgent(buildSearchRedactedArgs(options), rawConfig);
 }
 
+async function runSearch(options, rawConfig) {
+  return runVaultAgent(buildSearchFullArgs(options), rawConfig);
+}
+
 function createStatusTool(rawConfig) {
   return {
     name: TOOL_STATUS_NAME,
@@ -449,6 +464,22 @@ function createSearchTool(rawConfig) {
     name: TOOL_SEARCH_NAME,
     label: "Vault Search",
     description: TOOL_SEARCH_DESCRIPTION,
+    parameters: SEARCH_TOOL_PARAMETERS,
+    async execute(_toolCallId, params) {
+      const text = await runSearch(params, rawConfig);
+      return formatToolResult(text, {
+        backendCommand: "search",
+        forwarded: buildSearchFullArgs(params),
+      });
+    },
+  };
+}
+
+function createSearchRedactedTool(rawConfig) {
+  return {
+    name: TOOL_SEARCH_REDACTED_NAME,
+    label: "Vault Search Redacted",
+    description: TOOL_SEARCH_REDACTED_DESCRIPTION,
     parameters: SEARCH_TOOL_PARAMETERS,
     async execute(_toolCallId, params) {
       const text = await runSearchRedacted(params, rawConfig);
@@ -474,8 +505,12 @@ async function handleVaultCommand(rawArgs, rawConfig) {
     return runStatus(rawConfig);
   }
 
-  if (command === "search" || command === "search-redacted") {
+  if (command === "search") {
     return runVaultAgent(parseSearchArgs(rest), rawConfig);
+  }
+
+  if (command === "search-redacted") {
+    return runVaultAgent(parseSearchArgs(rest, { redacted: true }), rawConfig);
   }
 
   throw new Error(`Unsupported vault command: ${command}`);
@@ -505,6 +540,7 @@ const plugin = {
 
     api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME });
     api.registerTool(createSearchTool(pluginConfig), { name: TOOL_SEARCH_NAME });
+    api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME });
   },
 };
 
@@ -521,16 +557,22 @@ export {
   STATUS_TOOL_PARAMETERS,
   TOOL_SEARCH_DESCRIPTION,
   TOOL_SEARCH_NAME,
+  TOOL_SEARCH_REDACTED_DESCRIPTION,
+  TOOL_SEARCH_REDACTED_NAME,
   TOOL_STATUS_DESCRIPTION,
   TOOL_STATUS_NAME,
+  buildSearchArgs,
+  buildSearchFullArgs,
   buildVaultAgentInvocation,
   buildSearchRedactedArgs,
   createSearchTool,
+  createSearchRedactedTool,
   createStatusTool,
   formatToolResult,
   handleVaultCommand,
   parseSearchArgs,
   parseSearchFilters,
+  runSearch,
   runSearchRedacted,
   runStatus,
   resolvePluginConfig,

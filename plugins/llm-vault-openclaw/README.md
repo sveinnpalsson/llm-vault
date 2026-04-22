@@ -14,15 +14,17 @@ Tool surface:
 
 - `llm_vault_status`
 - `llm_vault_search`
+- `llm_vault_search_redacted`
 
-The tool surface is the intended autonomous path. `llm_vault_search` is redacted-only and safe by default. The slash command remains available for manual use.
+The tool surface is the intended autonomous path. `llm_vault_search` is the unsuffixed full-search path and `llm_vault_search_redacted` is the redacted variant. The slash command remains available for manual use.
 
 ## Boundary
 
 - the plugin shells only into `vault-agent`
 - `vault-ops` update, repair, migration, and other full-clearance workflows remain operator-only
-- both `/vault search` and `/vault search-redacted` are forced through `vault-agent search-redacted`
-- the autonomous tool surface exposes only status plus redacted search
+- `/vault search` runs `vault-agent search`
+- `/vault search-redacted` runs `vault-agent search-redacted`
+- the autonomous tool surface exposes status plus explicit full/redacted search tools
 
 ## Repo-Local Wiring
 
@@ -73,7 +75,8 @@ If the target agent uses tool allowlists, add:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
-            "llm_vault_search"
+            "llm_vault_search",
+            "llm_vault_search_redacted"
           ]
         }
       }

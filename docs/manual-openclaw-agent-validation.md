@@ -4,7 +4,7 @@ This checklist is intentionally manual and operator-run. It does not replace rel
 
 ## Goal
 
-Confirm that a fresh OpenClaw agent can install `llm-vault` from a checkout, discover the packaged `vault-ops` and `vault-agent` commands, and complete a basic redacted search path with operator-provided local config.
+Confirm that a fresh OpenClaw agent can install `llm-vault` from a checkout, discover the packaged `vault-ops` and `vault-agent` commands, and complete the explicit full/redacted search paths with operator-provided local config.
 
 ## Manual checklist
 
@@ -88,7 +88,7 @@ vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 ```
 
-10. From OpenClaw, verify the plugin exposes `/vault status`, the redacted `/vault search ...` command path, and the autonomous tools `llm_vault_status` and `llm_vault_search`.
+10. From OpenClaw, verify the plugin exposes `/vault status`, `/vault search ...`, `/vault search-redacted ...`, and the autonomous tools `llm_vault_status`, `llm_vault_search`, and `llm_vault_search_redacted`.
 11. Record the exact commands used, whether the installed entry points resolved correctly, whether the plugin found the intended checkout, and any setup friction for follow-up work.
 
 ## Notes

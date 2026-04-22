@@ -57,6 +57,26 @@ def test_search_redacted_builds_enforced_backend_command(monkeypatch: pytest.Mon
     assert "--config" not in cmd
 
 
+def test_search_builds_full_backend_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = vault_agent_cli.build_parser().parse_args(["search", "tax receipt", "--source", "docs", "--top-k", "3"])
+    captured: dict[str, object] = {}
+
+    def fake_run_json(cmd, *, cwd, timeout_seconds):
+        captured["cmd"] = cmd
+        payload = {"query": "tax receipt", "count": 1, "results": [], "clearance": "full"}
+        return payload, {"rc": 0, "stdout": json.dumps(payload), "stderr": ""}
+
+    monkeypatch.setattr(vault_agent_cli, "_run_json", fake_run_json)
+    rc, payload = vault_agent_cli.cmd_search(args)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[cmd.index("--clearance") + 1] == "full"
+    assert cmd[cmd.index("--search-level") + 1] == "auto"
+    assert cmd[cmd.index("--source") + 1] == "docs"
+
+
 def test_status_returns_lightweight_agent_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
     args = vault_agent_cli.build_parser().parse_args(["status"])
 
