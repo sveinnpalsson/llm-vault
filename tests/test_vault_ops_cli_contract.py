@@ -336,6 +336,10 @@ def test_update_forwards_max_to_registry_sync(monkeypatch: pytest.MonkeyPatch) -
     sync_cmd = next(cmd for cmd in calls if str(vault_ops_cli.REGISTRY_SYNC) in cmd)
     assert "--max-items" in sync_cmd
     assert sync_cmd[sync_cmd.index("--max-items") + 1] == "7"
+    assert "--reprocess-missing-summaries" in sync_cmd
+    assert sync_cmd[sync_cmd.index("--reprocess-missing-summaries") + 1] == "0"
+    assert "--reprocess-missing-photo-analysis" in sync_cmd
+    assert sync_cmd[sync_cmd.index("--reprocess-missing-photo-analysis") + 1] == "0"
 
 
 def test_update_vector_command_forwards_hidden_mail_body_cap(monkeypatch: pytest.MonkeyPatch) -> None:

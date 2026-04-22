@@ -410,6 +410,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         sync_cmd.append("--disable-summary")
     if args.disable_photo_analysis:
         sync_cmd.append("--disable-photo-analysis")
+    sync_cmd += ["--reprocess-missing-summaries", "0"]
+    sync_cmd += ["--reprocess-missing-photo-analysis", "0"]
     _append_registry_sync_flags(sync_cmd, args)
     if args.dry_run:
         sync_cmd.append("--dry-run")
