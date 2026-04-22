@@ -608,6 +608,7 @@ def test_repair_limits_registry_sync_and_vectors_to_this_run(monkeypatch: pytest
         redaction_api_key=None,
         redaction_timeout=None,
         no_vectors=False,
+        reconcile_redactions=False,
         dry_run=False,
         force_vector_update=False,
         verbose=False,
@@ -626,6 +627,64 @@ def test_repair_limits_registry_sync_and_vectors_to_this_run(monkeypatch: pytest
     assert "--max-items" in sync_cmd
     assert sync_cmd[sync_cmd.index("--max-items") + 1] == "5"
     assert "--updated-since" in vector_cmd
+
+
+def test_repair_can_request_explicit_vector_redaction_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        max=5,
+        registry_db="/tmp/registry.db",
+        vectors_db="/tmp/vectors.db",
+        docs_root=[],
+        photos_root=[],
+        reprocess_missing_summaries=-1,
+        photos=False,
+        reprocess_missing_photo_analysis=0,
+        source="all",
+        disable_summary=False,
+        disable_photo_analysis=False,
+        embed_base_url=None,
+        embed_model=None,
+        embed_api_key=None,
+        embed_timeout=None,
+        summary_base_url=None,
+        summary_model=None,
+        summary_api_key=None,
+        summary_timeout=None,
+        photo_analysis_url=None,
+        photo_analysis_timeout=None,
+        photo_analysis_force=False,
+        disable_pdf_service=False,
+        pdf_parse_url=None,
+        pdf_parse_timeout=None,
+        pdf_parse_profile=None,
+        embed_batch_size=None,
+        embed_batch_tokens=None,
+        embed_max_text_chars=None,
+        disable_redaction=False,
+        redaction_mode="hybrid",
+        redaction_profile="standard",
+        redaction_instruction="",
+        redaction_base_url=None,
+        redaction_model=None,
+        redaction_api_key=None,
+        redaction_timeout=None,
+        no_vectors=False,
+        reconcile_redactions=True,
+        dry_run=False,
+        force_vector_update=False,
+        verbose=False,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, *, label, verbose, dry_run=False):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(vault_ops_cli, "run_cmd", fake_run_cmd)
+    rc = vault_ops_cli.cmd_repair(args)
+    assert rc == 0
+    vector_cmd = next(cmd for cmd in calls if str(vault_ops_cli.VECTOR_INDEX) in cmd)
+    assert "--reconcile-redactions" in vector_cmd
 
 
 def test_upgrade_dry_run_outputs_plan(monkeypatch: pytest.MonkeyPatch, capsys) -> None:

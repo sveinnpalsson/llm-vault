@@ -515,6 +515,8 @@ def cmd_repair(args: argparse.Namespace) -> int:
     vector_args = argparse.Namespace(**vars(args))
     setattr(vector_args, "source", _resolve_vector_update_source_mode(args))
     _append_common_vector_flags(vector_cmd, vector_args)
+    if getattr(args, "reconcile_redactions", False):
+        vector_cmd.append("--reconcile-redactions")
     if args.verbose:
         vector_cmd.append("--verbose")
     return run_cmd(vector_cmd, label="repair:vector-index", verbose=args.verbose)
@@ -839,6 +841,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_repair.add_argument("--redaction-api-key", default=None)
     p_repair.add_argument("--redaction-timeout", type=int, default=None)
     p_repair.add_argument("--no-vectors", action="store_true", help="skip vector update phase")
+    p_repair.add_argument(
+        "--reconcile-redactions",
+        action="store_true",
+        help="run explicit full-source vector redaction reconciliation after repair",
+    )
     p_repair.add_argument("--dry-run", action="store_true", help="dry-run registry repair; skip vectors unless --force-vector-update")
     p_repair.add_argument("--force-vector-update", action="store_true", help="run vector update even when --dry-run is set")
     p_repair.add_argument("--verbose", action="store_true", help="print clean step-by-step progress")

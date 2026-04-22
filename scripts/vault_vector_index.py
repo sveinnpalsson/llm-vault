@@ -2857,42 +2857,6 @@ def update_index(
                 repair_sweep=consistency_pass,
             )
 
-        if (
-            chosen_index_level == INDEX_LEVEL_REDACTED
-            and stats.redaction_entries_added > 0
-            and not consistency_pass
-        ):
-            print(
-                "[progress] "
-                "[stage=index-vectors.consistency] "
-                "[item=1/1] "
-                f"[overall={stats.processed_sources}/{max(overall_total, 0)}] "
-                f"[action=rerun-to-reconcile-redactions new_redaction_entries={stats.redaction_entries_added} sections={selected_sections}] "
-                f"[elapsed={time.monotonic() - started_mono:.1f}s] "
-                "[eta=unknown] "
-                "[note=unchanged-sources-will-be-skipped]",
-                flush=True,
-            )
-            reg_conn.commit()
-            vec_conn.commit()
-            reg_conn.close()
-            vec_conn.close()
-            closed = True
-            return update_index(
-                registry_db,
-                vector_db,
-                embedding_client=embedding_client,
-                source_selection=source_selection,
-                mail_bridge_enabled=mail_bridge_enabled,
-                mail_max_body_chunks=mail_max_body_chunks,
-                index_level=index_level,
-                rebuild=False,
-                verbose=verbose,
-                redaction_cfg=redaction_cfg,
-                updated_since=None,
-                consistency_pass=True,
-            )
-
         cleanup_stale(vec_conn, reg_conn, stats)
         vec_conn.commit()
         if consistency_pass:
@@ -3435,6 +3399,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional incremental-update lower bound for source updated_at timestamps.",
     )
+    p.add_argument(
+        "--reconcile-redactions",
+        action="store_true",
+        help="Run an explicit full-source redaction consistency sweep instead of staying incremental.",
+    )
     p.add_argument("--taxonomy", default=None, help="Optional taxonomy filter (photos)")
     p.add_argument(
         "--category-primary",
@@ -3527,6 +3496,7 @@ def main() -> int:
             verbose=args.verbose,
             redaction_cfg=redaction_cfg,
             updated_since=args.updated_since,
+            consistency_pass=bool(args.reconcile_redactions),
         )
     if args.command == "rebuild":
         if not confirm_rebuild(
@@ -3551,6 +3521,7 @@ def main() -> int:
             verbose=args.verbose,
             redaction_cfg=redaction_cfg,
             updated_since=args.updated_since,
+            consistency_pass=bool(args.reconcile_redactions),
         )
     if args.command == "stats":
         return print_stats(vectors_db)
