@@ -79,6 +79,7 @@ Both tools call only `vault-agent`.
 `timeoutSeconds` is enforced by the plugin wrapper's child-process timeout. The plugin does not pass timeout flags into `vault-agent`.
 
 Unsuffixed names are the full-access paths: `llm_vault_search` and `llm_vault_fetch`. `_redacted` variants enforce redaction.
+Search uses the built-in hybrid ranker internally: vector similarity plus a deterministic lexical boost for exact-term matches.
 
 ## Config Placement
 

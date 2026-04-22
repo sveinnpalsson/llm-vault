@@ -37,6 +37,19 @@ class StubEmbeddingClient:
         return blobs, self.dim
 
 
+class FlatEmbeddingClient:
+    def __init__(self, dim: int = 8):
+        self.dim = dim
+
+    def embed_texts(self, texts: list[str]) -> tuple[list[bytes], int]:
+        import array
+
+        vec = [0.0] * self.dim
+        vec[0] = 1.0
+        blob = array.array("f", vec).tobytes()
+        return [blob for _ in texts], self.dim
+
+
 def _seed_registry_db(registry_db: Path) -> None:
     conn = connect_vault_db(registry_db, ensure_parent=True)
     try:
@@ -703,6 +716,38 @@ def test_query_dedupes_results_by_source_id(capsys, tmp_path: Path) -> None:
     assert payload["count"] == 2
     assert len({result["source_id"] for result in payload["results"]}) == 2
     assert [result["rank"] for result in payload["results"]] == [1, 2]
+
+
+def test_query_hybrid_lexical_boost_improves_exact_match_ranking(capsys, tmp_path: Path) -> None:
+    registry_db = tmp_path / "state" / "vault_registry.db"
+    vector_db = tmp_path / "state" / "vault_vectors.db"
+    _seed_registry_db(registry_db)
+
+    emb = FlatEmbeddingClient(dim=8)
+    rc = update_index(
+        registry_db,
+        vector_db,
+        embedding_client=emb,
+        source_selection="docs",
+        rebuild=True,
+        redaction_cfg=RedactionConfig(mode="regex", enabled=True),
+    )
+    assert rc == 0
+
+    _ = capsys.readouterr()
+    rc_query = query_index(
+        registry_db,
+        vector_db,
+        "t4x reciept",
+        top_k=5,
+        embedding_client=emb,
+        source_selection="docs",
+        clearance="full",
+        as_json=True,
+    )
+    assert rc_query == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"][0]["source_filepath"] == "/vault/docs/t4x-r3ceipt-ocr-noise.txt"
 
 
 def test_photo_reindex_skips_timestamp_only_ocr_changes(tmp_path: Path) -> None:

@@ -39,6 +39,7 @@ A public-facing redaction results page lives under [`eval/redaction/`](eval/reda
 
 The OpenClaw plugin is just the OpenClaw wrapper around `vault-agent`.
 It exists so agents inside OpenClaw can use an explicit wrapper surface without being given direct `vault-ops` access.
+Search ranking uses the built-in hybrid retriever path: vector similarity plus a small lexical boost for exact-term matches.
 
 That means the boundary is:
 

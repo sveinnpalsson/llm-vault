@@ -60,6 +60,8 @@ PROGRESS_HEARTBEAT_SECONDS = 5.0
 INDEX_LEVEL_REDACTED = 'redacted'
 INDEX_LEVEL_FULL = 'full'
 INDEX_LEVEL_AUTO = 'auto'
+HYBRID_LEXICAL_WEIGHT = 0.25
+HYBRID_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-_./:][a-z0-9]+)*")
 
 
 @dataclass
@@ -274,6 +276,30 @@ def floats_to_blob(values: list[float]) -> bytes:
 
 def dot(a: array.array, b: array.array) -> float:
     return float(sum(x * y for x, y in zip(a, b)))
+
+
+def _normalize_hybrid_text(text: str) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def _hybrid_tokens(text: str) -> list[str]:
+    return HYBRID_TOKEN_RE.findall(_normalize_hybrid_text(text))
+
+
+def _hybrid_lexical_score(*, query_text: str, query_tokens: list[str], candidate_text: str) -> float:
+    if not query_tokens:
+        return 0.0
+    normalized_candidate = _normalize_hybrid_text(candidate_text)
+    if not normalized_candidate:
+        return 0.0
+    candidate_tokens = set(_hybrid_tokens(candidate_text))
+    if not candidate_tokens:
+        return 0.0
+    unique_query_tokens = list(dict.fromkeys(query_tokens))
+    matched = sum(1 for token in unique_query_tokens if token in candidate_tokens)
+    coverage = matched / max(1, len(unique_query_tokens))
+    exact_phrase = 1.0 if _normalize_hybrid_text(query_text) in normalized_candidate else 0.0
+    return exact_phrase + coverage
 
 
 def chunk_text(
@@ -3101,7 +3127,7 @@ def query_index(
                     sql += f" AND source_table IN ({placeholders})"
                     params.extend(selected_tables)
 
-        best_by_source: dict[str, tuple[float, int, dict[str, Any]]] = {}
+        candidate_hits: list[tuple[float, int, dict[str, Any]]] = []
         seq = 0
         skipped_dim_mismatch = 0
         scanned = 0
@@ -3109,6 +3135,7 @@ def query_index(
         last_emit_mono = started_mono
         taxonomy_filter = (taxonomy or "").strip().lower()
         category_filter = (category_primary or "").strip().lower()
+        query_tokens = _hybrid_tokens(query_text)
         for row in vec_conn.execute(sql, params):
             scanned += 1
             now_mono = time.monotonic()
@@ -3129,7 +3156,7 @@ def query_index(
                     "[action=scan] "
                     f"[elapsed={elapsed:.1f}s] "
                     f"[eta={_format_eta(eta)}] "
-                    f"[candidates_kept={len(heap)}] "
+                    f"[candidates_kept={len(candidate_hits)}] "
                     f"[skipped_dim={skipped_dim_mismatch}]",
                     flush=True,
                 )
@@ -3153,7 +3180,6 @@ def query_index(
                 skipped_dim_mismatch += 1
                 continue
             score = dot(q, v)
-            source_id = _stable_source_id(str(row["source_table"]), str(row["source_filepath"]))
             payload = {
                 "score": score,
                 "item_id": row["item_id"],
@@ -3164,16 +3190,18 @@ def query_index(
                 "chunk_count": row["chunk_count"],
                 "text_preview_redacted": row["text_preview_redacted"] or row["text_preview"] or "",
                 "text_preview_full": row["text_preview_full"] or row["text_preview"] or "",
+                "hybrid_text": (
+                    row["text_preview_full"] if chosen_level == INDEX_LEVEL_FULL else row["text_preview_redacted"]
+                )
+                or row["text_preview"]
+                or "",
                 "metadata": metadata,
             }
             entry = (score, seq, payload)
             seq += 1
-            existing = best_by_source.get(source_id)
-            if existing is None or score > existing[0]:
-                best_by_source[source_id] = entry
+            candidate_hits.append(entry)
 
-        best = [item for _, _, item in sorted(best_by_source.values(), key=lambda x: x[0], reverse=True)[:top_k]]
-        if not best:
+        if not candidate_hits:
             if skipped_dim_mismatch:
                 msg = (
                     f"no matches (all candidates had embedding_dim != query_dim {q_dim}; "
@@ -3204,6 +3232,22 @@ def query_index(
             else:
                 print(msg)
             return 0
+
+        best_by_source: dict[str, tuple[float, int, dict[str, Any]]] = {}
+        for vector_score, seq_no, hit in candidate_hits:
+            lexical_score = _hybrid_lexical_score(
+                query_text=query_text,
+                query_tokens=query_tokens,
+                candidate_text=str(hit.get("hybrid_text") or ""),
+            )
+            hybrid_score = vector_score + HYBRID_LEXICAL_WEIGHT * lexical_score
+            source_id = _stable_source_id(str(hit["source_table"]), str(hit["source_filepath"]))
+            hit["score"] = hybrid_score
+            existing = best_by_source.get(source_id)
+            if existing is None or hybrid_score > existing[0]:
+                best_by_source[source_id] = (hybrid_score, seq_no, hit)
+
+        best = [item for _, _, item in sorted(best_by_source.values(), key=lambda x: x[0], reverse=True)[:top_k]]
 
         out_results: list[dict[str, Any]] = []
         for idx, hit in enumerate(best, start=1):
