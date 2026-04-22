@@ -138,6 +138,56 @@ def test_fetch_source_redacted_hides_filepath_and_redacts_mail_content(tmp_path:
     assert "msg_id" not in payload["metadata"]
 
 
+def test_fetch_source_redacted_clips_after_redaction_for_repeated_urls(tmp_path: Path) -> None:
+    ids = _seed_fetch_registry(tmp_path / "state" / "vault_registry.db")
+    reg = connect_vault_db(tmp_path / "state" / "vault_registry.db", ensure_parent=True)
+    try:
+        long_url = "https://app.mgbcareconnect.org/app/link/tab/visits?session_id=01KNYFZN5M4BESFJBQPGMPV642&utm_medium=email&utm_campaign=After_Visit_Summary_EmailPush&utm_content=After_Visit_Summary_EM&utm_source=braze"
+        body_text = (
+            "Please review your after visit summary.\n"
+            f"View after visit summary ({long_url})\n"
+            f"View after visit summary ({long_url})\n"
+            + ("Extra filler text. " * 80)
+        )
+        reg.execute(
+            "UPDATE mail_registry SET body_text = ?, snippet = ?, summary_text = ? WHERE filepath = ?",
+            (
+                body_text,
+                "Please review your after visit summary.",
+                "After visit summary available.",
+                "mail://message/fetch-mail-1",
+            ),
+        )
+        reg.execute(
+            """
+            INSERT INTO redaction_entries (
+              scope_type, scope_id, key_name, placeholder, value_norm, original_value,
+              source_mode, first_seen_at, last_seen_at, hit_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "vault",
+                "global",
+                "url",
+                "<REDACTED_URL_1>",
+                long_url,
+                long_url,
+                "regex",
+                "2026-03-24T11:05:00+00:00",
+                "2026-03-24T11:05:00+00:00",
+                2,
+            ),
+        )
+        reg.commit()
+    finally:
+        reg.close()
+
+    payload = fetch_source(tmp_path / "state" / "vault_registry.db", ids["mail"], clearance="redacted")
+
+    assert "<REDACTED_URL_1>" in payload["content"]
+    assert "https://app.mgbcareconnect.org" not in payload["content"]
+
+
 def test_list_sources_returns_newest_first_compact_rows(tmp_path: Path) -> None:
     ids = _seed_fetch_registry(tmp_path / "state" / "vault_registry.db")
 

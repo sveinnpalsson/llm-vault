@@ -11,7 +11,12 @@ from typing import Any
 from vault_db import connect_vault_db
 from vault_redaction import PersistentRedactionMap
 from vault_sources import REGISTERED_SOURCES, SourceHandler, select_source_handlers
-from vault_vector_index import _parse_dates_json, _parse_provenance_json, _sanitize_metadata_for_output, _stable_source_id
+from vault_vector_index import (
+    _parse_dates_json,
+    _parse_provenance_json,
+    _sanitize_metadata_for_output,
+    _stable_source_id,
+)
 
 DEFAULT_CONTENT_LIMIT = 1200
 DEFAULT_LIST_LIMIT = 5
@@ -36,9 +41,8 @@ def _clip(text: Any, limit: int = DEFAULT_CONTENT_LIMIT) -> str:
     return clean[: max(1, limit - 3)].rstrip() + "..."
 
 
-def _join_parts(parts: list[str], *, limit: int = DEFAULT_CONTENT_LIMIT) -> str:
-    text = "\n\n".join(part.strip() for part in parts if str(part or "").strip())
-    return _clip(text, limit=limit)
+def _join_parts(parts: list[str]) -> str:
+    return "\n\n".join(part.strip() for part in parts if str(part or "").strip())
 
 
 def _redact_text(text: str, table: PersistentRedactionMap | None) -> str:
@@ -318,6 +322,7 @@ def fetch_source(
 
         if clearance != "full":
             content = _redact_text(content, _load_redaction_map(conn))
+        content = _clip(content)
         return {
             "source_id": normalized_id,
             "source_kind": handler.kind,
