@@ -9,8 +9,8 @@ Privacy-first local vault for personal documents, photos, and mail.
 `llm-vault` builds an encrypted local registry and vector index over local content, then exposes:
 
 - `vault-ops` for operator workflows such as indexing, repair, upgrade, and maintenance
-- `vault-agent` for status plus explicit full/redacted search routing
-- a repo-local OpenClaw plugin package that wraps only the `vault-agent` safe surface
+- `vault-agent` for status plus explicit full/redacted search and fetch routing
+- a repo-local OpenClaw plugin package that wraps only the `vault-agent` control surface
 
 ![llm-vault architecture overview](assets/llm-vault-arch.png)
 
@@ -35,7 +35,7 @@ A public-facing redaction results page lives under [`eval/redaction/`](eval/reda
 `llm-vault` has two interfaces:
 
 - `vault-ops` is the operator interface. Use it for indexing, repair, upgrade, maintenance, and other unrestricted admin work.
-- `vault-agent` exposes status plus explicit `search` and `search-redacted` paths.
+- `vault-agent` exposes status plus explicit `search`/`search-redacted` and `fetch`/`fetch-redacted` paths.
 
 The OpenClaw plugin is just the OpenClaw wrapper around `vault-agent`.
 It exists so agents inside OpenClaw can use an explicit wrapper surface without being given direct `vault-ops` access.
@@ -43,7 +43,7 @@ It exists so agents inside OpenClaw can use an explicit wrapper surface without 
 That means the boundary is:
 
 - `vault-ops` is operator-only
-- `vault-agent` is the wrapper interface for explicit status/search routing
+- `vault-agent` is the wrapper interface for explicit status/search/fetch routing
 - the OpenClaw plugin only exposes that same `vault-agent` surface inside OpenClaw
 
 So an autonomous agent should use `vault-agent` or the OpenClaw plugin tools, and should not be given direct `vault-ops` access.
@@ -148,6 +148,7 @@ vault-ops status --json
 vault-ops search "tax receipt" --json
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
+vault-agent fetch-redacted <source_id_from_search>
 ```
 
 ## Automation
@@ -187,6 +188,7 @@ vault-ops status
 vault-ops update --source mail
 vault-ops search "budget approval" --source mail --json
 vault-agent search-redacted "budget approval" --source mail --top-k 3
+vault-agent fetch-redacted <source_id_from_search>
 ```
 
 Attachment import behavior:
@@ -201,10 +203,10 @@ The repo-local plugin package lives at [`plugins/llm-vault-openclaw`](plugins/ll
 
 OpenClaw has two separate surfaces here:
 
-- command surface: `/vault status`, `/vault search ...`, `/vault search-redacted ...`
-- tool surface: `llm_vault_status`, `llm_vault_search`, `llm_vault_search_redacted`
+- command surface: `/vault status`, `/vault search ...`, `/vault search-redacted ...`, `/vault fetch ...`, `/vault fetch-redacted ...`
+- tool surface: `llm_vault_status`, `llm_vault_search`, `llm_vault_search_redacted`, `llm_vault_fetch`, `llm_vault_fetch_redacted`
 
-The tool surface is the intended autonomous path. `llm_vault_search` is the unsuffixed full-search path and `llm_vault_search_redacted` is the redacted variant. The slash command stays available for manual use.
+The tool surface is the intended autonomous path. Unsuffixed names are the full-access paths: `llm_vault_search` and `llm_vault_fetch`. `_redacted` variants enforce redaction. The slash command stays available for manual use.
 
 ### `openclaw.json`
 
@@ -251,7 +253,9 @@ No extra agent block is needed if the target agent already has open tool access.
           "alsoAllow": [
             "llm_vault_status",
             "llm_vault_search",
-            "llm_vault_search_redacted"
+            "llm_vault_search_redacted",
+            "llm_vault_fetch",
+            "llm_vault_fetch_redacted"
           ]
         }
       }

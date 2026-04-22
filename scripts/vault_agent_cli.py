@@ -6,14 +6,22 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tomllib
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from vault_db import VaultDBEncryptionRequired, VaultDBKeyError
+from vault_fetch import FetchNotFoundError, fetch_source
 from vault_sources import source_choices
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VAULT_OPS = ROOT / "vault-ops"
+DEFAULT_REGISTRY_DB = ROOT / "state" / "vault_registry.db"
+DEFAULT_CONFIG_CANDIDATES = (
+    ROOT / "vault-ops.toml",
+    ROOT / ".vault-ops.toml",
+)
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_SAFE_TOP_K = 10
 
@@ -347,6 +355,28 @@ def _build_search_cmd(args: argparse.Namespace, *, clearance: str, search_level:
     return cmd
 
 
+def _resolve_registry_db_path() -> Path:
+    for candidate in DEFAULT_CONFIG_CANDIDATES:
+        if not candidate.exists():
+            continue
+        try:
+            with candidate.open("rb") as fh:
+                raw = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"invalid config TOML in {candidate}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ValueError(f"config root must be a TOML table: {candidate}")
+        paths = raw.get("paths")
+        registry_db = paths.get("registry_db") if isinstance(paths, dict) else None
+        if registry_db:
+            resolved = Path(str(registry_db)).expanduser()
+            if not resolved.is_absolute():
+                resolved = candidate.parent / resolved
+            return resolved.resolve()
+        return DEFAULT_REGISTRY_DB
+    return DEFAULT_REGISTRY_DB
+
+
 def cmd_status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     operation = "status"
     try:
@@ -425,6 +455,57 @@ def cmd_search_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return _cmd_search(args, operation="search_redacted", clearance="redacted", search_level="redacted")
 
 
+def _cmd_fetch(args: argparse.Namespace, *, operation: str, clearance: str) -> tuple[int, dict[str, Any]]:
+    request = {"source_id": args.source_id}
+    enforced = {"clearance": clearance}
+    try:
+        payload = fetch_source(_resolve_registry_db_path(), args.source_id, clearance=clearance)
+    except FetchNotFoundError:
+        return 2, _error_payload(
+            operation,
+            "not_found",
+            "source_id was not found",
+            details={"request": request, "enforced": enforced},
+        )
+    except ValueError as exc:
+        return 2, _error_payload(
+            operation,
+            "invalid_config" if "config" in str(exc).lower() else "invalid_request",
+            str(exc),
+            details={"request": request, "enforced": enforced},
+        )
+    except FileNotFoundError:
+        return 2, _error_payload(
+            operation,
+            "backend_unavailable",
+            "vault database is unavailable",
+            details={"request": request, "enforced": enforced},
+        )
+    except VaultDBEncryptionRequired as exc:
+        return 2, _error_payload(
+            operation,
+            "missing_secret",
+            str(exc),
+            details={"request": request, "enforced": enforced},
+        )
+    except VaultDBKeyError:
+        return 2, _error_payload(
+            operation,
+            "backend_unavailable",
+            "vault database is unavailable",
+            details={"request": request, "enforced": enforced},
+        )
+    return 0, _success_payload(operation, data=payload, request=request, enforced=enforced)
+
+
+def cmd_fetch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return _cmd_fetch(args, operation="fetch", clearance="full")
+
+
+def cmd_fetch_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return _cmd_fetch(args, operation="fetch_redacted", clearance="redacted")
+
+
 def cmd_answer_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return 0, {
         "status": "deferred",
@@ -471,6 +552,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="redacted search with enforced redacted retrieval",
     )
     p_search_redacted.set_defaults(handler=cmd_search_redacted)
+
+    fetch_common = argparse.ArgumentParser(add_help=False)
+    fetch_common.add_argument("source_id", help="stable source identifier from search results")
+
+    p_fetch = subparsers.add_parser("fetch", parents=[fetch_common], help="fetch one source by source_id")
+    p_fetch.set_defaults(handler=cmd_fetch)
+
+    p_fetch_redacted = subparsers.add_parser(
+        "fetch-redacted",
+        parents=[fetch_common],
+        help="fetch one source by source_id with enforced redaction",
+    )
+    p_fetch_redacted.set_defaults(handler=cmd_fetch_redacted)
 
     p_answer = subparsers.add_parser(
         "answer-redacted",

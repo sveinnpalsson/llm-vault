@@ -17,10 +17,14 @@ const PLUGIN_ID = "llm-vault";
 const PLUGIN_NAME = "llm-vault";
 const PLUGIN_DESCRIPTION = "llm-vault OpenClaw plugin scaffold backed by vault-agent.";
 const COMMAND_NAME = "vault";
-const COMMAND_DESCRIPTION = "Run llm-vault status and explicit full/redacted search commands.";
+const COMMAND_DESCRIPTION = "Run llm-vault status plus explicit full/redacted search and fetch commands.";
+const TOOL_FETCH_NAME = "llm_vault_fetch";
+const TOOL_FETCH_REDACTED_NAME = "llm_vault_fetch_redacted";
 const TOOL_STATUS_NAME = "llm_vault_status";
 const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted";
 const TOOL_SEARCH_NAME = "llm_vault_search";
+const TOOL_FETCH_DESCRIPTION = "Fetch one llm-vault source through vault-agent.";
+const TOOL_FETCH_REDACTED_DESCRIPTION = "Fetch one llm-vault source through vault-agent with redaction.";
 const TOOL_STATUS_DESCRIPTION = "Return llm-vault status from vault-agent.";
 const TOOL_SEARCH_DESCRIPTION = "Run llm-vault full search through vault-agent.";
 const TOOL_SEARCH_REDACTED_DESCRIPTION =
@@ -40,6 +44,14 @@ const SAFE_SURFACE = Object.freeze([
     name: "search-redacted",
     usage:
       "/vault search-redacted <query> [--source all|docs|photos|mail] [--top-k 1-10] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD] [--taxonomy <value>] [--category-primary <value>]",
+  },
+  {
+    name: "fetch",
+    usage: "/vault fetch <source-id>",
+  },
+  {
+    name: "fetch-redacted",
+    usage: "/vault fetch-redacted <source-id>",
   },
 ]);
 const SAFE_BOUNDARY_LINES = Object.freeze([
@@ -92,6 +104,18 @@ const SEARCH_TOOL_PARAMETERS = Object.freeze({
       type: "string",
       minLength: 1,
       description: "Optional primary category filter forwarded to vault-agent.",
+    },
+  },
+});
+const FETCH_TOOL_PARAMETERS = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: ["sourceId"],
+  properties: {
+    sourceId: {
+      type: "string",
+      minLength: 1,
+      description: "Stable source identifier returned by search results.",
     },
   },
 });
@@ -354,6 +378,22 @@ function parseSearchArgs(tokens, { redacted = false } = {}) {
   return buildSearchArgs(parseSearchFilters(tokens), { redacted });
 }
 
+function buildFetchArgs(options, { redacted = false } = {}) {
+  const sourceId = optionalConfigString(options?.sourceId, "sourceId");
+  return [redacted ? "fetch-redacted" : "fetch", sourceId];
+}
+
+function parseFetchArgs(tokens, { redacted = false } = {}) {
+  const sourceId = tokens.join(" ").trim();
+  if (!sourceId) {
+    throw new Error("fetch requires a source-id.");
+  }
+  if (tokens.some((token) => token.startsWith("--"))) {
+    throw new Error("fetch does not accept options.");
+  }
+  return buildFetchArgs({ sourceId }, { redacted });
+}
+
 function parseTimeoutSeconds(raw) {
   const parsed = Number.parseInt(String(raw), 10);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_TIMEOUT_SECONDS) {
@@ -446,6 +486,14 @@ async function runSearch(options, rawConfig) {
   return runVaultAgent(buildSearchFullArgs(options), rawConfig);
 }
 
+async function runFetch(options, rawConfig) {
+  return runVaultAgent(buildFetchArgs(options), rawConfig);
+}
+
+async function runFetchRedacted(options, rawConfig) {
+  return runVaultAgent(buildFetchArgs(options, { redacted: true }), rawConfig);
+}
+
 function createStatusTool(rawConfig) {
   return {
     name: TOOL_STATUS_NAME,
@@ -491,6 +539,38 @@ function createSearchRedactedTool(rawConfig) {
   };
 }
 
+function createFetchTool(rawConfig) {
+  return {
+    name: TOOL_FETCH_NAME,
+    label: "Vault Fetch",
+    description: TOOL_FETCH_DESCRIPTION,
+    parameters: FETCH_TOOL_PARAMETERS,
+    async execute(_toolCallId, params) {
+      const text = await runFetch(params, rawConfig);
+      return formatToolResult(text, {
+        backendCommand: "fetch",
+        forwarded: buildFetchArgs(params),
+      });
+    },
+  };
+}
+
+function createFetchRedactedTool(rawConfig) {
+  return {
+    name: TOOL_FETCH_REDACTED_NAME,
+    label: "Vault Fetch Redacted",
+    description: TOOL_FETCH_REDACTED_DESCRIPTION,
+    parameters: FETCH_TOOL_PARAMETERS,
+    async execute(_toolCallId, params) {
+      const text = await runFetchRedacted(params, rawConfig);
+      return formatToolResult(text, {
+        backendCommand: "fetch-redacted",
+        forwarded: buildFetchArgs(params, { redacted: true }),
+      });
+    },
+  };
+}
+
 async function handleVaultCommand(rawArgs, rawConfig) {
   const tokens = tokenizeArgs(rawArgs);
   if (tokens.length === 0 || tokens[0] === "help") {
@@ -511,6 +591,14 @@ async function handleVaultCommand(rawArgs, rawConfig) {
 
   if (command === "search-redacted") {
     return runVaultAgent(parseSearchArgs(rest, { redacted: true }), rawConfig);
+  }
+
+  if (command === "fetch") {
+    return runVaultAgent(parseFetchArgs(rest), rawConfig);
+  }
+
+  if (command === "fetch-redacted") {
+    return runVaultAgent(parseFetchArgs(rest, { redacted: true }), rawConfig);
   }
 
   throw new Error(`Unsupported vault command: ${command}`);
@@ -538,6 +626,8 @@ const plugin = {
       },
     });
 
+    api.registerTool(createFetchTool(pluginConfig), { name: TOOL_FETCH_NAME });
+    api.registerTool(createFetchRedactedTool(pluginConfig), { name: TOOL_FETCH_REDACTED_NAME });
     api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME });
     api.registerTool(createSearchTool(pluginConfig), { name: TOOL_SEARCH_NAME });
     api.registerTool(createSearchRedactedTool(pluginConfig), { name: TOOL_SEARCH_REDACTED_NAME });
@@ -553,7 +643,12 @@ export {
   PLUGIN_NAME,
   SAFE_BOUNDARY_LINES,
   SAFE_SURFACE,
+  FETCH_TOOL_PARAMETERS,
   SEARCH_TOOL_PARAMETERS,
+  TOOL_FETCH_DESCRIPTION,
+  TOOL_FETCH_NAME,
+  TOOL_FETCH_REDACTED_DESCRIPTION,
+  TOOL_FETCH_REDACTED_NAME,
   STATUS_TOOL_PARAMETERS,
   TOOL_SEARCH_DESCRIPTION,
   TOOL_SEARCH_NAME,
@@ -561,17 +656,23 @@ export {
   TOOL_SEARCH_REDACTED_NAME,
   TOOL_STATUS_DESCRIPTION,
   TOOL_STATUS_NAME,
+  buildFetchArgs,
   buildSearchArgs,
   buildSearchFullArgs,
   buildVaultAgentInvocation,
   buildSearchRedactedArgs,
+  createFetchRedactedTool,
+  createFetchTool,
   createSearchTool,
   createSearchRedactedTool,
   createStatusTool,
   formatToolResult,
   handleVaultCommand,
+  parseFetchArgs,
   parseSearchArgs,
   parseSearchFilters,
+  runFetch,
+  runFetchRedacted,
   runSearch,
   runSearchRedacted,
   runStatus,

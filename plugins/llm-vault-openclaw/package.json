@@ -2,7 +2,7 @@
   "name": "llm-vault-openclaw",
   "private": true,
   "version": "0.0.1",
-  "description": "Repo-local OpenClaw plugin scaffold for explicit llm-vault status and search access.",
+  "description": "Repo-local OpenClaw plugin scaffold for explicit llm-vault status, search, and fetch access.",
   "type": "module",
   "main": "./index.js",
   "exports": {

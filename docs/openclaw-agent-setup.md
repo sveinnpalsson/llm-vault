@@ -13,7 +13,7 @@ Use this document when the goal is: install from a checkout, wire OpenClaw to th
 Keep the surfaces separate:
 
 - `vault-ops`: operator-only; indexing, repair, upgrade, migration, unrestricted maintenance
-- `vault-agent`: status plus explicit `search` and `search-redacted`
+- `vault-agent`: status plus explicit `search`/`search-redacted` and `fetch`/`fetch-redacted`
 - `plugins/llm-vault-openclaw`: OpenClaw wrapper around `vault-agent` only
 
 Do not wire OpenClaw directly to `vault-ops`.
@@ -125,13 +125,14 @@ If `[mail_bridge].import_attachments = true`, that mail update can also create m
 ```bash
 vault-agent status
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
+vault-agent fetch-redacted <source_id_from_search>
 ```
 
 Expected boundary:
 
 - `vault-agent` does not accept a config override
 - `vault-agent` does not allow a clearance override
-- search routing is explicit: `search` is unsuffixed and `search-redacted` is the redacted variant
+- routing is explicit: unsuffixed `search` and `fetch` are the full-access paths; `_redacted` variants enforce redaction
 
 ## Step 5: Wire The OpenClaw Plugin
 
@@ -192,12 +193,16 @@ Command surface:
 - `/vault status`
 - `/vault search ...`
 - `/vault search-redacted ...`
+- `/vault fetch ...`
+- `/vault fetch-redacted ...`
 
 Tool surface:
 
 - `llm_vault_status`
 - `llm_vault_search`
 - `llm_vault_search_redacted`
+- `llm_vault_fetch`
+- `llm_vault_fetch_redacted`
 
 If the target agent uses a tool allowlist, add:
 
@@ -211,7 +216,9 @@ If the target agent uses a tool allowlist, add:
           "alsoAllow": [
             "llm_vault_status",
             "llm_vault_search",
-            "llm_vault_search_redacted"
+            "llm_vault_search_redacted",
+            "llm_vault_fetch",
+            "llm_vault_fetch_redacted"
           ]
         }
       }
@@ -228,8 +235,9 @@ From OpenClaw, confirm:
 
 - `/vault status` works
 - `/vault search ...` runs the unsuffixed full-search path
+- `/vault fetch ...` runs the unsuffixed full-fetch path
 - `llm_vault_status` is available to the agent
-- `llm_vault_search` and `llm_vault_search_redacted` are available to the agent
+- `llm_vault_search`, `llm_vault_search_redacted`, `llm_vault_fetch`, and `llm_vault_fetch_redacted` are available to the agent
 
 Config contract:
 

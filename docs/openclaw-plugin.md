@@ -12,7 +12,7 @@ The plugin package contains:
 - `package.json` that points OpenClaw at `index.js`
 - `plugin-config.example.json` for the inner runtime payload
 - a manual command surface for `/vault ...`
-- an agent tool surface for `llm_vault_status`, `llm_vault_search`, and `llm_vault_search_redacted`
+- an agent tool surface for `llm_vault_status`, `llm_vault_search`, `llm_vault_search_redacted`, `llm_vault_fetch`, and `llm_vault_fetch_redacted`
 
 This is a repo-local plugin package, not a published standalone release.
 
@@ -25,7 +25,9 @@ This integration keeps the boundary narrow:
 - the tool surface maps only to `vault-agent`
 - `/vault search` maps to `vault-agent search`
 - `/vault search-redacted` maps to `vault-agent search-redacted`
-- the agent tool surface exposes status plus explicit full/redacted search tools
+- `/vault fetch` maps to `vault-agent fetch`
+- `/vault fetch-redacted` maps to `vault-agent fetch-redacted`
+- the agent tool surface exposes status plus explicit full/redacted search and fetch tools
 
 `answer-redacted` remains out of scope for this plugin.
 
@@ -35,6 +37,8 @@ This integration keeps the boundary narrow:
 /vault status
 /vault search "tax receipt" --source docs --top-k 3
 /vault search-redacted "budget approval" --source mail --from-date 2026-01-01 --taxonomy work
+/vault fetch 3dd3af...
+/vault fetch-redacted 3dd3af...
 ```
 
 Safe filters forwarded to `vault-agent search-redacted`:
@@ -53,6 +57,8 @@ Autonomous use should go through these exact tool names:
 - `llm_vault_status`
 - `llm_vault_search`
 - `llm_vault_search_redacted`
+- `llm_vault_fetch`
+- `llm_vault_fetch_redacted`
 
 `llm_vault_search` and `llm_vault_search_redacted` accept:
 
@@ -64,11 +70,15 @@ Autonomous use should go through these exact tool names:
 - `taxonomy`
 - `categoryPrimary`
 
+`llm_vault_fetch` and `llm_vault_fetch_redacted` accept:
+
+- `sourceId`
+
 Both tools call only `vault-agent`.
 
 `timeoutSeconds` is enforced by the plugin wrapper's child-process timeout. The plugin does not pass timeout flags into `vault-agent`.
 
-`llm_vault_search` is the unsuffixed full-search path. `llm_vault_search_redacted` is the redacted variant.
+Unsuffixed names are the full-access paths: `llm_vault_search` and `llm_vault_fetch`. `_redacted` variants enforce redaction.
 
 ## Config Placement
 
@@ -140,7 +150,9 @@ For an allowlisted agent, add the llm-vault tools explicitly:
           "alsoAllow": [
             "llm_vault_status",
             "llm_vault_search",
-            "llm_vault_search_redacted"
+            "llm_vault_search_redacted",
+            "llm_vault_fetch",
+            "llm_vault_fetch_redacted"
           ]
         }
       }

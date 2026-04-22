@@ -9,14 +9,18 @@ Command surface:
 - `/vault status`
 - `/vault search ...`
 - `/vault search-redacted ...`
+- `/vault fetch <source-id>`
+- `/vault fetch-redacted <source-id>`
 
 Tool surface:
 
 - `llm_vault_status`
 - `llm_vault_search`
 - `llm_vault_search_redacted`
+- `llm_vault_fetch`
+- `llm_vault_fetch_redacted`
 
-The tool surface is the intended autonomous path. `llm_vault_search` is the unsuffixed full-search path and `llm_vault_search_redacted` is the redacted variant. The slash command remains available for manual use.
+The tool surface is the intended autonomous path. Unsuffixed names are the full-access paths: `llm_vault_search` and `llm_vault_fetch`. `_redacted` variants enforce redaction. The slash command remains available for manual use.
 
 ## Boundary
 
@@ -24,7 +28,9 @@ The tool surface is the intended autonomous path. `llm_vault_search` is the unsu
 - `vault-ops` update, repair, migration, and other full-clearance workflows remain operator-only
 - `/vault search` runs `vault-agent search`
 - `/vault search-redacted` runs `vault-agent search-redacted`
-- the autonomous tool surface exposes status plus explicit full/redacted search tools
+- `/vault fetch` runs `vault-agent fetch`
+- `/vault fetch-redacted` runs `vault-agent fetch-redacted`
+- the autonomous tool surface exposes status plus explicit full/redacted search and fetch tools
 
 ## Repo-Local Wiring
 
@@ -76,7 +82,9 @@ If the target agent uses tool allowlists, add:
           "alsoAllow": [
             "llm_vault_status",
             "llm_vault_search",
-            "llm_vault_search_redacted"
+            "llm_vault_search_redacted",
+            "llm_vault_fetch",
+            "llm_vault_fetch_redacted"
           ]
         }
       }

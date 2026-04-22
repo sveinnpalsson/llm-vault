@@ -1,7 +1,7 @@
 {
   "id": "llm-vault",
   "name": "llm-vault",
-  "description": "OpenClaw plugin scaffold for explicit llm-vault status and search access.",
+  "description": "OpenClaw plugin scaffold for explicit llm-vault status, search, and fetch access.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

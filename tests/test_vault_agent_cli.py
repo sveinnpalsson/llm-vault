@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import vault_agent_cli
@@ -75,6 +76,49 @@ def test_search_builds_full_backend_command(monkeypatch: pytest.MonkeyPatch) -> 
     assert cmd[cmd.index("--clearance") + 1] == "full"
     assert cmd[cmd.index("--search-level") + 1] == "auto"
     assert cmd[cmd.index("--source") + 1] == "docs"
+
+
+def test_fetch_returns_structured_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = vault_agent_cli.build_parser().parse_args(["fetch", "source-123"])
+
+    monkeypatch.setattr(vault_agent_cli, "_resolve_registry_db_path", lambda: Path("/tmp/registry.db"))
+    monkeypatch.setattr(
+        vault_agent_cli,
+        "fetch_source",
+        lambda registry_db, source_id, *, clearance: {
+            "source_id": source_id,
+            "source_kind": "docs",
+            "source_table": "docs_registry",
+            "source_filepath": "/vault/docs/a.txt" if clearance == "full" else None,
+            "source_updated_at": "2026-03-24T10:00:00+00:00",
+            "clearance": clearance,
+            "metadata": {"kind": "doc"},
+            "content": "Summary: hello",
+        },
+    )
+
+    rc, payload = vault_agent_cli.cmd_fetch(args)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert payload["request"] == {"source_id": "source-123"}
+    assert payload["enforced"] == {"clearance": "full"}
+    assert payload["data"]["source_filepath"] == "/vault/docs/a.txt"
+
+
+def test_fetch_redacted_reports_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = vault_agent_cli.build_parser().parse_args(["fetch-redacted", "source-404"])
+
+    monkeypatch.setattr(vault_agent_cli, "_resolve_registry_db_path", lambda: Path("/tmp/registry.db"))
+
+    def fake_fetch_source(registry_db, source_id, *, clearance):
+        raise vault_agent_cli.FetchNotFoundError(source_id)
+
+    monkeypatch.setattr(vault_agent_cli, "fetch_source", fake_fetch_source)
+    rc, payload = vault_agent_cli.cmd_fetch_redacted(args)
+    assert rc == 2
+    assert payload["status"] == "error"
+    assert payload["errorCode"] == "not_found"
+    assert payload["details"]["enforced"] == {"clearance": "redacted"}
 
 
 def test_status_returns_lightweight_agent_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
