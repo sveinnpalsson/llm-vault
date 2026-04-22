@@ -840,7 +840,7 @@ def test_photo_reindex_skips_timestamp_only_ocr_changes(tmp_path: Path) -> None:
         vec.close()
 
 
-def test_redacted_update_revisits_earlier_sources_when_map_grows(
+def test_redacted_update_leaves_earlier_sources_unchanged_when_map_grows(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -887,8 +887,8 @@ def test_redacted_update_revisits_earlier_sources_when_map_grows(
             ).fetchall()
         ]
         assert previews
-        assert all("Jane Doe" not in preview for preview in previews)
-        assert any("<REDACTED_PERSON_" in preview for preview in previews)
+        assert any("Jane Doe" in preview for preview in previews)
+        assert all("<REDACTED_PERSON_" not in preview for preview in previews)
     finally:
         conn.close()
 
