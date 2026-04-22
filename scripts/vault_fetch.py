@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-oriented fetch helpers for llm-vault."""
+"""Source-oriented fetch and list helpers for llm-vault."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ from typing import Any
 
 from vault_db import connect_vault_db
 from vault_redaction import PersistentRedactionMap
-from vault_sources import REGISTERED_SOURCES, SourceHandler
+from vault_sources import REGISTERED_SOURCES, SourceHandler, select_source_handlers
 from vault_vector_index import _parse_dates_json, _parse_provenance_json, _sanitize_metadata_for_output, _stable_source_id
 
 DEFAULT_CONTENT_LIMIT = 1200
+DEFAULT_LIST_LIMIT = 5
 
 
 class FetchNotFoundError(LookupError):
@@ -46,6 +47,10 @@ def _redact_text(text: str, table: PersistentRedactionMap | None) -> str:
     return table.apply(text)
 
 
+def _clean_text(text: Any) -> str:
+    return " ".join(str(text or "").strip().split())
+
+
 def _load_redaction_map(conn: sqlite3.Connection) -> PersistentRedactionMap | None:
     if not _table_exists(conn, "redaction_entries"):
         return None
@@ -71,6 +76,120 @@ def _load_redaction_map(conn: sqlite3.Connection) -> PersistentRedactionMap | No
     if not any(row[1] for row in rows):
         return None
     return PersistentRedactionMap.from_rows(rows)
+
+
+def _coalesce_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _list_sort_key(row: dict[str, Any], *, kind: str) -> tuple[str, str]:
+    primary_date = str(row.get("primary_date") or "").strip()
+    if kind == "photos":
+        secondary_date = _coalesce_text(row.get("date_taken"), row.get("updated_at"))
+    elif kind == "mail":
+        secondary_date = _coalesce_text(row.get("date_iso"), row.get("updated_at"))
+    else:
+        secondary_date = str(row.get("updated_at") or "").strip()
+    return primary_date, secondary_date
+
+
+def _list_effective_date(row: dict[str, Any], *, kind: str) -> str | None:
+    primary_date, secondary_date = _list_sort_key(row, kind=kind)
+    chosen = primary_date or secondary_date
+    clean = str(chosen or "").strip()
+    return clean or None
+
+
+def _preview_doc(row: dict[str, Any]) -> str:
+    return _coalesce_text(row.get("summary_text"), row.get("text_content"))
+
+
+def _preview_photo(row: dict[str, Any]) -> str:
+    return _coalesce_text(row.get("caption"), row.get("notes"), row.get("ocr_text"))
+
+
+def _preview_mail(row: dict[str, Any]) -> str:
+    return _coalesce_text(row.get("subject"), row.get("summary_text"), row.get("snippet"))
+
+
+def _build_list_item(
+    row: dict[str, Any],
+    *,
+    handler: SourceHandler,
+    clearance: str,
+    redaction_map: PersistentRedactionMap | None,
+) -> dict[str, Any]:
+    filepath = str(row.get("filepath") or "")
+    if handler.kind == "docs":
+        preview = _preview_doc(row)
+    elif handler.kind == "photos":
+        preview = _preview_photo(row)
+    else:
+        preview = _preview_mail(row)
+    preview = _clean_text(preview)
+    if clearance != "full":
+        preview = _clean_text(_redact_text(preview, redaction_map))
+
+    return {
+        "source_id": _stable_source_id(handler.table, filepath),
+        "source_kind": handler.kind,
+        "source_table": handler.table,
+        "source_filepath": filepath if clearance == "full" else None,
+        "primary_date": str(row.get("primary_date") or "").strip() or None,
+        "source_updated_at": str(row.get("updated_at") or "").strip() or None,
+        "preview": _clip(preview, limit=240),
+    }
+
+
+def _list_rows_for_handler(
+    conn: sqlite3.Connection,
+    *,
+    handler: SourceHandler,
+    from_date: str | None,
+    to_date: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if handler.kind == "docs":
+        sql = """
+            SELECT filepath, summary_text, text_content, primary_date, updated_at
+            FROM docs_registry
+            WHERE (
+              ? IS NULL OR COALESCE(SUBSTR(primary_date, 1, 10), SUBSTR(updated_at, 1, 10)) >= ?
+            ) AND (
+              ? IS NULL OR COALESCE(SUBSTR(primary_date, 1, 10), SUBSTR(updated_at, 1, 10)) <= ?
+            )
+            ORDER BY COALESCE(primary_date, updated_at, '') DESC, filepath DESC
+            LIMIT ?
+        """
+    elif handler.kind == "photos":
+        sql = """
+            SELECT filepath, caption, notes, ocr_text, date_taken, primary_date, updated_at
+            FROM photos_registry
+            WHERE (
+              ? IS NULL OR COALESCE(SUBSTR(primary_date, 1, 10), SUBSTR(date_taken, 1, 10), SUBSTR(updated_at, 1, 10)) >= ?
+            ) AND (
+              ? IS NULL OR COALESCE(SUBSTR(primary_date, 1, 10), SUBSTR(date_taken, 1, 10), SUBSTR(updated_at, 1, 10)) <= ?
+            )
+            ORDER BY COALESCE(primary_date, date_taken, updated_at, '') DESC, filepath DESC
+            LIMIT ?
+        """
+    else:
+        sql = """
+            SELECT filepath, subject, summary_text, snippet, primary_date, date_iso, updated_at
+            FROM mail_registry
+            WHERE (
+              ? IS NULL OR COALESCE(SUBSTR(primary_date, 1, 10), SUBSTR(date_iso, 1, 10), SUBSTR(updated_at, 1, 10)) >= ?
+            ) AND (
+              ? IS NULL OR COALESCE(SUBSTR(primary_date, 1, 10), SUBSTR(date_iso, 1, 10), SUBSTR(updated_at, 1, 10)) <= ?
+            )
+            ORDER BY COALESCE(primary_date, date_iso, updated_at, '') DESC, filepath DESC
+            LIMIT ?
+        """
+    return [dict(row) for row in conn.execute(sql, (from_date, from_date, to_date, to_date, limit)).fetchall()]
 
 
 def _lookup_source_row(conn: sqlite3.Connection, source_id: str) -> tuple[SourceHandler, dict[str, Any]]:
@@ -213,6 +332,58 @@ def fetch_source(
                 source_filepath=filepath,
             ),
             "content": content,
+        }
+    finally:
+        conn.close()
+
+
+def list_sources(
+    registry_db: str | Path,
+    *,
+    source: str = "all",
+    from_date: str | None = None,
+    to_date: str | None = None,
+    limit: int = DEFAULT_LIST_LIMIT,
+    clearance: str = "redacted",
+) -> dict[str, Any]:
+    path = Path(registry_db)
+    if not path.exists():
+        raise FileNotFoundError(f"registry db not found: {path}")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    handlers = select_source_handlers(source)
+    conn = connect_vault_db(path, timeout=30.0)
+    try:
+        redaction_map = _load_redaction_map(conn) if clearance != "full" else None
+        items: list[tuple[tuple[str, str], dict[str, Any]]] = []
+        for handler in handlers:
+            if not _table_exists(conn, handler.table):
+                continue
+            for row in _list_rows_for_handler(
+                conn,
+                handler=handler,
+                from_date=from_date,
+                to_date=to_date,
+                limit=limit,
+            ):
+                item = _build_list_item(
+                    row,
+                    handler=handler,
+                    clearance=clearance,
+                    redaction_map=redaction_map,
+                )
+                sort_key = _list_sort_key(row, kind=handler.kind)
+                items.append((sort_key, item))
+        items.sort(key=lambda pair: (pair[0][0], pair[0][1], pair[1]["source_id"]), reverse=True)
+        results = [item for _, item in items[:limit]]
+        return {
+            "source": source,
+            "from_date": from_date,
+            "to_date": to_date,
+            "limit": limit,
+            "count": len(results),
+            "results": results,
         }
     finally:
         conn.close()

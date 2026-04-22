@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from vault_db import VaultDBEncryptionRequired, VaultDBKeyError
-from vault_fetch import FetchNotFoundError, fetch_source
+from vault_fetch import DEFAULT_LIST_LIMIT, FetchNotFoundError, fetch_source, list_sources
 from vault_sources import source_choices
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +90,16 @@ def _safe_top_k(value: str) -> int:
         raise argparse.ArgumentTypeError("top_k must be an integer") from exc
     if not 1 <= parsed <= MAX_SAFE_TOP_K:
         raise argparse.ArgumentTypeError(f"top_k must be between 1 and {MAX_SAFE_TOP_K}")
+    return parsed
+
+
+def _safe_limit(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be an integer") from exc
+    if not 1 <= parsed <= MAX_SAFE_TOP_K:
+        raise argparse.ArgumentTypeError(f"limit must be between 1 and {MAX_SAFE_TOP_K}")
     return parsed
 
 
@@ -506,6 +516,62 @@ def cmd_fetch_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return _cmd_fetch(args, operation="fetch_redacted", clearance="redacted")
 
 
+def _cmd_list(args: argparse.Namespace, *, operation: str, clearance: str) -> tuple[int, dict[str, Any]]:
+    request = {
+        "source": args.source,
+        "from_date": args.from_date,
+        "to_date": args.to_date,
+        "limit": args.limit,
+    }
+    enforced = {"clearance": clearance}
+    try:
+        payload = list_sources(
+            _resolve_registry_db_path(),
+            source=args.source,
+            from_date=args.from_date,
+            to_date=args.to_date,
+            limit=args.limit,
+            clearance=clearance,
+        )
+    except ValueError as exc:
+        return 2, _error_payload(
+            operation,
+            "invalid_config" if "config" in str(exc).lower() else "invalid_request",
+            str(exc),
+            details={"request": request, "enforced": enforced},
+        )
+    except FileNotFoundError:
+        return 2, _error_payload(
+            operation,
+            "backend_unavailable",
+            "vault database is unavailable",
+            details={"request": request, "enforced": enforced},
+        )
+    except VaultDBEncryptionRequired as exc:
+        return 2, _error_payload(
+            operation,
+            "missing_secret",
+            str(exc),
+            details={"request": request, "enforced": enforced},
+        )
+    except VaultDBKeyError:
+        return 2, _error_payload(
+            operation,
+            "backend_unavailable",
+            "vault database is unavailable",
+            details={"request": request, "enforced": enforced},
+        )
+    return 0, _success_payload(operation, data=payload, request=request, enforced=enforced)
+
+
+def cmd_list(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return _cmd_list(args, operation="list", clearance="full")
+
+
+def cmd_list_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return _cmd_list(args, operation="list_redacted", clearance="redacted")
+
+
 def cmd_answer_redacted(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return 0, {
         "status": "deferred",
@@ -555,6 +621,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     fetch_common = argparse.ArgumentParser(add_help=False)
     fetch_common.add_argument("source_id", help="stable source identifier from search results")
+
+    list_common = argparse.ArgumentParser(add_help=False)
+    list_common.add_argument("--source", choices=source_choices(), default="all")
+    list_common.add_argument("--from-date", type=_iso_date, dest="from_date")
+    list_common.add_argument("--to-date", type=_iso_date, dest="to_date")
+    list_common.add_argument("--limit", type=_safe_limit, default=DEFAULT_LIST_LIMIT)
+
+    p_list = subparsers.add_parser("list", parents=[list_common], help="list recent sources newest-first")
+    p_list.set_defaults(handler=cmd_list)
+
+    p_list_redacted = subparsers.add_parser(
+        "list-redacted",
+        parents=[list_common],
+        help="list recent sources newest-first with enforced redaction",
+    )
+    p_list_redacted.set_defaults(handler=cmd_list_redacted)
 
     p_fetch = subparsers.add_parser("fetch", parents=[fetch_common], help="fetch one source by source_id")
     p_fetch.set_defaults(handler=cmd_fetch)

@@ -7,6 +7,8 @@ This directory is the repo-local OpenClaw plugin package for `llm-vault`.
 Command surface:
 
 - `/vault status`
+- `/vault list ...`
+- `/vault list-redacted ...`
 - `/vault search ...`
 - `/vault search-redacted ...`
 - `/vault fetch <source-id>`
@@ -15,22 +17,26 @@ Command surface:
 Tool surface:
 
 - `llm_vault_status`
+- `llm_vault_list`
+- `llm_vault_list_redacted`
 - `llm_vault_search`
 - `llm_vault_search_redacted`
 - `llm_vault_fetch`
 - `llm_vault_fetch_redacted`
 
-The tool surface is the intended autonomous path. Unsuffixed names are the full-access paths: `llm_vault_search` and `llm_vault_fetch`. `_redacted` variants enforce redaction. The slash command remains available for manual use.
+The tool surface is the intended autonomous path. Unsuffixed names are the full-access paths: `llm_vault_list`, `llm_vault_search`, and `llm_vault_fetch`. `_redacted` variants enforce redaction. The slash command remains available for manual use.
 
 ## Boundary
 
 - the plugin shells only into `vault-agent`
 - `vault-ops` update, repair, migration, and other full-clearance workflows remain operator-only
+- `/vault list` runs `vault-agent list`
+- `/vault list-redacted` runs `vault-agent list-redacted`
 - `/vault search` runs `vault-agent search`
 - `/vault search-redacted` runs `vault-agent search-redacted`
 - `/vault fetch` runs `vault-agent fetch`
 - `/vault fetch-redacted` runs `vault-agent fetch-redacted`
-- the autonomous tool surface exposes status plus explicit full/redacted search and fetch tools
+- the autonomous tool surface exposes status plus explicit full/redacted list, search, and fetch tools
 
 ## Repo-Local Wiring
 
@@ -81,6 +87,8 @@ If the target agent uses tool allowlists, add:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
+            "llm_vault_list",
+            "llm_vault_list_redacted",
             "llm_vault_search",
             "llm_vault_search_redacted",
             "llm_vault_fetch",

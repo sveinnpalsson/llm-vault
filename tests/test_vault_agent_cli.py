@@ -121,6 +121,57 @@ def test_fetch_redacted_reports_not_found(monkeypatch: pytest.MonkeyPatch) -> No
     assert payload["details"]["enforced"] == {"clearance": "redacted"}
 
 
+def test_list_returns_structured_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = vault_agent_cli.build_parser().parse_args(["list", "--source", "mail", "--limit", "3"])
+
+    monkeypatch.setattr(vault_agent_cli, "_resolve_registry_db_path", lambda: Path("/tmp/registry.db"))
+    monkeypatch.setattr(
+        vault_agent_cli,
+        "list_sources",
+        lambda registry_db, *, source, from_date, to_date, limit, clearance: {
+            "source": source,
+            "from_date": from_date,
+            "to_date": to_date,
+            "limit": limit,
+            "count": 1,
+            "results": [
+                {
+                    "source_id": "source-123",
+                    "source_kind": "mail",
+                    "source_table": "mail_registry",
+                    "source_filepath": None if clearance != "full" else "mail://message/1",
+                    "primary_date": "2026-03-24T11:00:00+00:00",
+                    "source_updated_at": "2026-03-24T11:05:00+00:00",
+                    "preview": "Budget approval",
+                }
+            ],
+        },
+    )
+
+    rc, payload = vault_agent_cli.cmd_list(args)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert payload["request"] == {"source": "mail", "from_date": None, "to_date": None, "limit": 3}
+    assert payload["enforced"] == {"clearance": "full"}
+    assert payload["data"]["results"][0]["source_filepath"] == "mail://message/1"
+
+
+def test_list_redacted_reports_missing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = vault_agent_cli.build_parser().parse_args(["list-redacted"])
+
+    monkeypatch.setattr(vault_agent_cli, "_resolve_registry_db_path", lambda: Path("/tmp/registry.db"))
+
+    def fake_list_sources(registry_db, *, source, from_date, to_date, limit, clearance):
+        raise vault_agent_cli.VaultDBEncryptionRequired("LLM_VAULT_DB_PASSWORD is required")
+
+    monkeypatch.setattr(vault_agent_cli, "list_sources", fake_list_sources)
+    rc, payload = vault_agent_cli.cmd_list_redacted(args)
+    assert rc == 2
+    assert payload["status"] == "error"
+    assert payload["errorCode"] == "missing_secret"
+    assert payload["details"]["enforced"] == {"clearance": "redacted"}
+
+
 def test_status_returns_lightweight_agent_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
     args = vault_agent_cli.build_parser().parse_args(["status"])
 

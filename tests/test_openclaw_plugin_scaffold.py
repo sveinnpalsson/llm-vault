@@ -103,6 +103,8 @@ def test_openclaw_plugin_docs_are_honest_about_scope() -> None:
     assert "plugins.entries.llm-vault.config" in content
     assert "llm_vault_fetch" in content
     assert "llm_vault_fetch_redacted" in content
+    assert "llm_vault_list" in content
+    assert "llm_vault_list_redacted" in content
     assert "llm_vault_status" in content
     assert "llm_vault_search" in content
     assert "llm_vault_search_redacted" in content
@@ -122,6 +124,8 @@ def test_openclaw_plugin_package_readme_and_example_config_cover_repo_local_enab
     assert "plugins.entries.llm-vault.config" in readme
     assert "llm_vault_fetch" in readme
     assert "llm_vault_fetch_redacted" in readme
+    assert "llm_vault_list" in readme
+    assert "llm_vault_list_redacted" in readme
     assert "llm_vault_status" in readme
     assert "llm_vault_search" in readme
     assert "llm_vault_search_redacted" in readme
@@ -146,6 +150,8 @@ def test_openclaw_agent_setup_doc_covers_required_inputs_and_plugin_stub() -> No
     assert "plugins.entries.llm-vault.config" in content
     assert "llm_vault_fetch" in content
     assert "llm_vault_fetch_redacted" in content
+    assert "llm_vault_list" in content
+    assert "llm_vault_list_redacted" in content
     assert "llm_vault_search" in content
     assert "llm_vault_search_redacted" in content
     assert "manual and operator-run" in content
@@ -157,11 +163,15 @@ def test_openclaw_plugin_index_keeps_safe_boundary() -> None:
     assert 'const COMMAND_NAME = "vault"' in content
     assert 'const TOOL_FETCH_NAME = "llm_vault_fetch"' in content
     assert 'const TOOL_FETCH_REDACTED_NAME = "llm_vault_fetch_redacted"' in content
+    assert 'const TOOL_LIST_NAME = "llm_vault_list"' in content
+    assert 'const TOOL_LIST_REDACTED_NAME = "llm_vault_list_redacted"' in content
     assert 'const TOOL_STATUS_NAME = "llm_vault_status"' in content
     assert 'const TOOL_SEARCH_NAME = "llm_vault_search"' in content
     assert 'const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted"' in content
     assert "resolvePluginConfig(api.pluginConfig)" in content
     assert "ctx?.config" not in content
+    assert 'api.registerTool(createListTool(pluginConfig), { name: TOOL_LIST_NAME })' in content
+    assert 'api.registerTool(createListRedactedTool(pluginConfig), { name: TOOL_LIST_REDACTED_NAME })' in content
     assert 'api.registerTool(createFetchTool(pluginConfig), { name: TOOL_FETCH_NAME })' in content
     assert 'api.registerTool(createFetchRedactedTool(pluginConfig), { name: TOOL_FETCH_REDACTED_NAME })' in content
     assert 'api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME })' in content
@@ -218,12 +228,30 @@ console.log(JSON.stringify({{
     assert payload["commands"] == [
         {
             "name": "vault",
-            "description": "Run llm-vault status plus explicit full/redacted search and fetch commands.",
+            "description": "Run llm-vault status plus explicit full/redacted list, search, and fetch commands.",
             "acceptsArgs": True,
             "hasHandler": True,
         }
     ]
     assert payload["tools"] == [
+        {
+            "name": "llm_vault_list",
+            "description": "Run llm-vault full list through vault-agent.",
+            "label": "Vault List",
+            "optionName": "llm_vault_list",
+            "hasExecute": True,
+            "required": [],
+            "parameterKeys": ["source", "limit", "fromDate", "toDate"],
+        },
+        {
+            "name": "llm_vault_list_redacted",
+            "description": "Run llm-vault redacted list through vault-agent.",
+            "label": "Vault List Redacted",
+            "optionName": "llm_vault_list_redacted",
+            "hasExecute": True,
+            "required": [],
+            "parameterKeys": ["source", "limit", "fromDate", "toDate"],
+        },
         {
             "name": "llm_vault_fetch",
             "description": "Fetch one llm-vault source through vault-agent.",
@@ -494,6 +522,59 @@ console.log(JSON.stringify({{
     assert payload["built"] == payload["parsedRedacted"]
 
 
+def test_openclaw_plugin_list_parser_builds_full_and_redacted_backends() -> None:
+    payload = _run_node_json(
+        f"""
+import {{ buildListFullArgs, buildListRedactedArgs, parseListArgs, tokenizeArgs }} from {json.dumps(PLUGIN_INDEX)};
+console.log(JSON.stringify({{
+  tokens: tokenizeArgs('list --source mail --limit 3 --from-date 2026-01-01'),
+  parsedFull: parseListArgs([
+    "--source",
+    "mail",
+    "--limit",
+    "3",
+    "--from-date",
+    "2026-01-01",
+  ]),
+  parsedRedacted: parseListArgs([
+    "--source",
+    "mail",
+    "--limit",
+    "3",
+    "--from-date",
+    "2026-01-01",
+  ], {{ redacted: true }}),
+  builtFull: buildListFullArgs({{
+    source: "mail",
+    limit: 3,
+    fromDate: "2026-01-01",
+  }}),
+  builtRedacted: buildListRedactedArgs({{
+    source: "mail",
+    limit: 3,
+    fromDate: "2026-01-01",
+  }}),
+}}));
+"""
+    )
+    if not payload:
+        return
+
+    assert payload["tokens"] == ["list", "--source", "mail", "--limit", "3", "--from-date", "2026-01-01"]
+    assert payload["parsedFull"] == ["list", "--source", "mail", "--limit", "3", "--from-date", "2026-01-01"]
+    assert payload["parsedRedacted"] == [
+        "list-redacted",
+        "--source",
+        "mail",
+        "--limit",
+        "3",
+        "--from-date",
+        "2026-01-01",
+    ]
+    assert payload["builtFull"] == payload["parsedFull"]
+    assert payload["builtRedacted"] == payload["parsedRedacted"]
+
+
 def test_openclaw_plugin_fetch_parser_builds_full_and_redacted_backends() -> None:
     payload = _run_node_json(
         f"""
@@ -679,6 +760,55 @@ console.log(JSON.stringify({{ result, redacted }}));
             "--taxonomy",
             "finance",
         ],
+        "cwd": str(tmp_path),
+    }
+
+
+def test_openclaw_list_tool_surface_executes_full_and_redacted_backends(tmp_path: Path) -> None:
+    fake_agent = _write_fake_vault_agent(tmp_path)
+    payload = _run_node_json(
+        f"""
+import {{ createListRedactedTool, createListTool }} from {json.dumps(PLUGIN_INDEX)};
+const tool = createListTool({{
+  repoRoot: {json.dumps(str(tmp_path))},
+  vaultAgentPath: {json.dumps(str(fake_agent))},
+  timeoutSeconds: 19,
+}});
+const redactedTool = createListRedactedTool({{
+  repoRoot: {json.dumps(str(tmp_path))},
+  vaultAgentPath: {json.dumps(str(fake_agent))},
+  timeoutSeconds: 19,
+}});
+const result = await tool.execute("tool-call-1", {{
+  source: "mail",
+  limit: 3,
+  fromDate: "2026-01-01",
+}});
+const redacted = await redactedTool.execute("tool-call-2", {{
+  source: "mail",
+  limit: 3,
+  fromDate: "2026-01-01",
+}});
+console.log(JSON.stringify({{ result, redacted }}));
+"""
+    )
+    if not payload:
+        return
+
+    assert payload["result"]["details"] == {
+        "backendCommand": "list",
+        "forwarded": ["list", "--source", "mail", "--limit", "3", "--from-date", "2026-01-01"],
+    }
+    assert payload["redacted"]["details"] == {
+        "backendCommand": "list-redacted",
+        "forwarded": ["list-redacted", "--source", "mail", "--limit", "3", "--from-date", "2026-01-01"],
+    }
+    assert json.loads(payload["result"]["content"][0]["text"]) == {
+        "argv": ["list", "--source", "mail", "--limit", "3", "--from-date", "2026-01-01"],
+        "cwd": str(tmp_path),
+    }
+    assert json.loads(payload["redacted"]["content"][0]["text"]) == {
+        "argv": ["list-redacted", "--source", "mail", "--limit", "3", "--from-date", "2026-01-01"],
         "cwd": str(tmp_path),
     }
 

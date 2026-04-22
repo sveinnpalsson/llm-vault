@@ -13,7 +13,7 @@ Use this document when the goal is: install from a checkout, wire OpenClaw to th
 Keep the surfaces separate:
 
 - `vault-ops`: operator-only; indexing, repair, upgrade, migration, unrestricted maintenance
-- `vault-agent`: status plus explicit `search`/`search-redacted` and `fetch`/`fetch-redacted`
+- `vault-agent`: status plus explicit `list`/`list-redacted`, `search`/`search-redacted`, and `fetch`/`fetch-redacted`
 - `plugins/llm-vault-openclaw`: OpenClaw wrapper around `vault-agent` only
 
 Do not wire OpenClaw directly to `vault-ops`.
@@ -124,6 +124,7 @@ If `[mail_bridge].import_attachments = true`, that mail update can also create m
 
 ```bash
 vault-agent status
+vault-agent list-redacted --source mail --limit 3
 vault-agent search-redacted "tax receipt" --source docs --top-k 3
 vault-agent fetch-redacted <source_id_from_search>
 ```
@@ -132,7 +133,7 @@ Expected boundary:
 
 - `vault-agent` does not accept a config override
 - `vault-agent` does not allow a clearance override
-- routing is explicit: unsuffixed `search` and `fetch` are the full-access paths; `_redacted` variants enforce redaction
+- routing is explicit: unsuffixed `list`, `search`, and `fetch` are the full-access paths; `_redacted` variants enforce redaction
 
 ## Step 5: Wire The OpenClaw Plugin
 
@@ -191,6 +192,8 @@ The plugin exposes both a manual command surface and an autonomous tool surface.
 Command surface:
 
 - `/vault status`
+- `/vault list ...`
+- `/vault list-redacted ...`
 - `/vault search ...`
 - `/vault search-redacted ...`
 - `/vault fetch ...`
@@ -199,6 +202,8 @@ Command surface:
 Tool surface:
 
 - `llm_vault_status`
+- `llm_vault_list`
+- `llm_vault_list_redacted`
 - `llm_vault_search`
 - `llm_vault_search_redacted`
 - `llm_vault_fetch`
@@ -215,6 +220,8 @@ If the target agent uses a tool allowlist, add:
         "tools": {
           "alsoAllow": [
             "llm_vault_status",
+            "llm_vault_list",
+            "llm_vault_list_redacted",
             "llm_vault_search",
             "llm_vault_search_redacted",
             "llm_vault_fetch",
@@ -234,10 +241,11 @@ If the agent already uses `tools.allow`, add those same names there instead.
 From OpenClaw, confirm:
 
 - `/vault status` works
+- `/vault list ...` runs the unsuffixed full-list path
 - `/vault search ...` runs the unsuffixed full-search path
 - `/vault fetch ...` runs the unsuffixed full-fetch path
 - `llm_vault_status` is available to the agent
-- `llm_vault_search`, `llm_vault_search_redacted`, `llm_vault_fetch`, and `llm_vault_fetch_redacted` are available to the agent
+- `llm_vault_list`, `llm_vault_list_redacted`, `llm_vault_search`, `llm_vault_search_redacted`, `llm_vault_fetch`, and `llm_vault_fetch_redacted` are available to the agent
 
 Config contract:
 

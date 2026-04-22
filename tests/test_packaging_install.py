@@ -116,6 +116,7 @@ def test_editable_install_exposes_console_scripts(tmp_path: Path) -> None:
     assert "usage: vault-ops" in ops.stdout
     assert "migrate-encryption" in ops.stdout
     assert "usage: vault-agent" in agent.stdout
+    assert "list-redacted" in agent.stdout
     assert "search-redacted" in agent.stdout
     assert "usage: redaction-eval" in eval_cmd.stdout
     assert "--require-llm-candidates" in eval_cmd.stdout

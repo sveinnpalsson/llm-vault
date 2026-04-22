@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from vault_db import connect_vault_db
-from vault_fetch import fetch_source
+from vault_fetch import fetch_source, list_sources
 from vault_registry_sync import ensure_db
 from vault_vector_index import _stable_source_id
 
@@ -136,3 +136,35 @@ def test_fetch_source_redacted_hides_filepath_and_redacts_mail_content(tmp_path:
     assert "<REDACTED_EMAIL_1>" in payload["content"]
     assert "account_email" not in payload["metadata"]
     assert "msg_id" not in payload["metadata"]
+
+
+def test_list_sources_returns_newest_first_compact_rows(tmp_path: Path) -> None:
+    ids = _seed_fetch_registry(tmp_path / "state" / "vault_registry.db")
+
+    payload = list_sources(tmp_path / "state" / "vault_registry.db", source="all", limit=5, clearance="full")
+
+    assert payload["source"] == "all"
+    assert payload["limit"] == 5
+    assert payload["count"] == 2
+    assert [item["source_id"] for item in payload["results"]] == [ids["mail"], ids["doc"]]
+    assert payload["results"][0]["source_kind"] == "mail"
+    assert payload["results"][0]["preview"] == "Budget approval"
+    assert payload["results"][1]["source_filepath"] == "/vault/docs/fetch-doc.txt"
+
+
+def test_list_sources_redacted_filters_dates_and_hides_full_fields(tmp_path: Path) -> None:
+    ids = _seed_fetch_registry(tmp_path / "state" / "vault_registry.db")
+
+    payload = list_sources(
+        tmp_path / "state" / "vault_registry.db",
+        source="mail",
+        from_date="2026-03-24",
+        to_date="2026-03-24",
+        limit=5,
+        clearance="redacted",
+    )
+
+    assert payload["count"] == 1
+    assert payload["results"][0]["source_id"] == ids["mail"]
+    assert payload["results"][0]["source_filepath"] is None
+    assert payload["results"][0]["preview"] == "Budget approval"

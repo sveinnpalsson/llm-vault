@@ -17,12 +17,16 @@ const PLUGIN_ID = "llm-vault";
 const PLUGIN_NAME = "llm-vault";
 const PLUGIN_DESCRIPTION = "llm-vault OpenClaw plugin scaffold backed by vault-agent.";
 const COMMAND_NAME = "vault";
-const COMMAND_DESCRIPTION = "Run llm-vault status plus explicit full/redacted search and fetch commands.";
+const COMMAND_DESCRIPTION = "Run llm-vault status plus explicit full/redacted list, search, and fetch commands.";
+const TOOL_LIST_NAME = "llm_vault_list";
+const TOOL_LIST_REDACTED_NAME = "llm_vault_list_redacted";
 const TOOL_FETCH_NAME = "llm_vault_fetch";
 const TOOL_FETCH_REDACTED_NAME = "llm_vault_fetch_redacted";
 const TOOL_STATUS_NAME = "llm_vault_status";
 const TOOL_SEARCH_REDACTED_NAME = "llm_vault_search_redacted";
 const TOOL_SEARCH_NAME = "llm_vault_search";
+const TOOL_LIST_DESCRIPTION = "Run llm-vault full list through vault-agent.";
+const TOOL_LIST_REDACTED_DESCRIPTION = "Run llm-vault redacted list through vault-agent.";
 const TOOL_FETCH_DESCRIPTION = "Fetch one llm-vault source through vault-agent.";
 const TOOL_FETCH_REDACTED_DESCRIPTION = "Fetch one llm-vault source through vault-agent with redaction.";
 const TOOL_STATUS_DESCRIPTION = "Return llm-vault status from vault-agent.";
@@ -34,6 +38,16 @@ const SAFE_SURFACE = Object.freeze([
   {
     name: "status",
     usage: "/vault status",
+  },
+  {
+    name: "list",
+    usage:
+      "/vault list [--source all|docs|photos|mail] [--limit 1-10] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]",
+  },
+  {
+    name: "list-redacted",
+    usage:
+      "/vault list-redacted [--source all|docs|photos|mail] [--limit 1-10] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]",
   },
   {
     name: "search",
@@ -104,6 +118,33 @@ const SEARCH_TOOL_PARAMETERS = Object.freeze({
       type: "string",
       minLength: 1,
       description: "Optional primary category filter forwarded to vault-agent.",
+    },
+  },
+});
+const LIST_TOOL_PARAMETERS = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    source: {
+      type: "string",
+      enum: ["all", "docs", "photos", "mail"],
+      description: "Restrict results to one source family.",
+    },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: MAX_SAFE_TOP_K,
+      description: `Maximum row count from 1 to ${MAX_SAFE_TOP_K}.`,
+    },
+    fromDate: {
+      type: "string",
+      pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+      description: "Lower inclusive date bound in YYYY-MM-DD format.",
+    },
+    toDate: {
+      type: "string",
+      pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+      description: "Upper inclusive date bound in YYYY-MM-DD format.",
     },
   },
 });
@@ -325,6 +366,50 @@ function parseSearchFilters(tokens) {
   };
 }
 
+function parseListFilters(tokens) {
+  const filters = {
+    source: "all",
+    limit: 5,
+    fromDate: null,
+    toDate: null,
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--source") {
+      const value = ensureOptionValue(tokens, index, "--source");
+      if (!SOURCE_CHOICES.has(value)) {
+        throw new Error("source must be one of all, docs, photos, or mail.");
+      }
+      filters.source = value;
+      index += 1;
+      continue;
+    }
+    if (token === "--limit") {
+      const value = ensureOptionValue(tokens, index, "--limit");
+      filters.limit = parsePositiveInt(value);
+      index += 1;
+      continue;
+    }
+    if (token === "--from-date") {
+      filters.fromDate = parseIsoDate(ensureOptionValue(tokens, index, "--from-date"), "--from-date");
+      index += 1;
+      continue;
+    }
+    if (token === "--to-date") {
+      filters.toDate = parseIsoDate(ensureOptionValue(tokens, index, "--to-date"), "--to-date");
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--")) {
+      throw new Error(`Unsupported list option: ${token}`);
+    }
+    throw new Error("list does not accept positional arguments.");
+  }
+
+  return filters;
+}
+
 function buildSearchArgs(options, { redacted = false } = {}) {
   const query = optionalConfigString(options?.query, "query");
   if (!query) {
@@ -376,6 +461,41 @@ function buildSearchFullArgs(options) {
 
 function parseSearchArgs(tokens, { redacted = false } = {}) {
   return buildSearchArgs(parseSearchFilters(tokens), { redacted });
+}
+
+function buildListArgs(options, { redacted = false } = {}) {
+  const source = normalize(options?.source || "all");
+  if (!SOURCE_CHOICES.has(source)) {
+    throw new Error("source must be one of all, docs, photos, or mail.");
+  }
+  const limit = parsePositiveInt(options?.limit ?? 5);
+  const fromDate = options?.fromDate === null || options?.fromDate === undefined
+    ? null
+    : parseIsoDate(options.fromDate, "fromDate");
+  const toDate = options?.toDate === null || options?.toDate === undefined
+    ? null
+    : parseIsoDate(options.toDate, "toDate");
+
+  const args = [redacted ? "list-redacted" : "list", "--source", source, "--limit", String(limit)];
+  if (fromDate) {
+    args.push("--from-date", fromDate);
+  }
+  if (toDate) {
+    args.push("--to-date", toDate);
+  }
+  return args;
+}
+
+function buildListRedactedArgs(options) {
+  return buildListArgs(options, { redacted: true });
+}
+
+function buildListFullArgs(options) {
+  return buildListArgs(options, { redacted: false });
+}
+
+function parseListArgs(tokens, { redacted = false } = {}) {
+  return buildListArgs(parseListFilters(tokens), { redacted });
 }
 
 function buildFetchArgs(options, { redacted = false } = {}) {
@@ -486,6 +606,14 @@ async function runSearch(options, rawConfig) {
   return runVaultAgent(buildSearchFullArgs(options), rawConfig);
 }
 
+async function runList(options, rawConfig) {
+  return runVaultAgent(buildListFullArgs(options), rawConfig);
+}
+
+async function runListRedacted(options, rawConfig) {
+  return runVaultAgent(buildListRedactedArgs(options), rawConfig);
+}
+
 async function runFetch(options, rawConfig) {
   return runVaultAgent(buildFetchArgs(options), rawConfig);
 }
@@ -518,6 +646,38 @@ function createSearchTool(rawConfig) {
       return formatToolResult(text, {
         backendCommand: "search",
         forwarded: buildSearchFullArgs(params),
+      });
+    },
+  };
+}
+
+function createListTool(rawConfig) {
+  return {
+    name: TOOL_LIST_NAME,
+    label: "Vault List",
+    description: TOOL_LIST_DESCRIPTION,
+    parameters: LIST_TOOL_PARAMETERS,
+    async execute(_toolCallId, params) {
+      const text = await runList(params, rawConfig);
+      return formatToolResult(text, {
+        backendCommand: "list",
+        forwarded: buildListFullArgs(params),
+      });
+    },
+  };
+}
+
+function createListRedactedTool(rawConfig) {
+  return {
+    name: TOOL_LIST_REDACTED_NAME,
+    label: "Vault List Redacted",
+    description: TOOL_LIST_REDACTED_DESCRIPTION,
+    parameters: LIST_TOOL_PARAMETERS,
+    async execute(_toolCallId, params) {
+      const text = await runListRedacted(params, rawConfig);
+      return formatToolResult(text, {
+        backendCommand: "list-redacted",
+        forwarded: buildListRedactedArgs(params),
       });
     },
   };
@@ -593,6 +753,14 @@ async function handleVaultCommand(rawArgs, rawConfig) {
     return runVaultAgent(parseSearchArgs(rest, { redacted: true }), rawConfig);
   }
 
+  if (command === "list") {
+    return runVaultAgent(parseListArgs(rest), rawConfig);
+  }
+
+  if (command === "list-redacted") {
+    return runVaultAgent(parseListArgs(rest, { redacted: true }), rawConfig);
+  }
+
   if (command === "fetch") {
     return runVaultAgent(parseFetchArgs(rest), rawConfig);
   }
@@ -626,6 +794,8 @@ const plugin = {
       },
     });
 
+    api.registerTool(createListTool(pluginConfig), { name: TOOL_LIST_NAME });
+    api.registerTool(createListRedactedTool(pluginConfig), { name: TOOL_LIST_REDACTED_NAME });
     api.registerTool(createFetchTool(pluginConfig), { name: TOOL_FETCH_NAME });
     api.registerTool(createFetchRedactedTool(pluginConfig), { name: TOOL_FETCH_REDACTED_NAME });
     api.registerTool(createStatusTool(pluginConfig), { name: TOOL_STATUS_NAME });
@@ -644,7 +814,12 @@ export {
   SAFE_BOUNDARY_LINES,
   SAFE_SURFACE,
   FETCH_TOOL_PARAMETERS,
+  LIST_TOOL_PARAMETERS,
   SEARCH_TOOL_PARAMETERS,
+  TOOL_LIST_DESCRIPTION,
+  TOOL_LIST_NAME,
+  TOOL_LIST_REDACTED_DESCRIPTION,
+  TOOL_LIST_REDACTED_NAME,
   TOOL_FETCH_DESCRIPTION,
   TOOL_FETCH_NAME,
   TOOL_FETCH_REDACTED_DESCRIPTION,
@@ -656,11 +831,16 @@ export {
   TOOL_SEARCH_REDACTED_NAME,
   TOOL_STATUS_DESCRIPTION,
   TOOL_STATUS_NAME,
+  buildListArgs,
+  buildListFullArgs,
+  buildListRedactedArgs,
   buildFetchArgs,
   buildSearchArgs,
   buildSearchFullArgs,
   buildVaultAgentInvocation,
   buildSearchRedactedArgs,
+  createListRedactedTool,
+  createListTool,
   createFetchRedactedTool,
   createFetchTool,
   createSearchTool,
@@ -668,9 +848,13 @@ export {
   createStatusTool,
   formatToolResult,
   handleVaultCommand,
+  parseListArgs,
+  parseListFilters,
   parseFetchArgs,
   parseSearchArgs,
   parseSearchFilters,
+  runList,
+  runListRedacted,
   runFetch,
   runFetchRedacted,
   runSearch,
